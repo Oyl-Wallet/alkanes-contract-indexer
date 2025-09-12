@@ -10,6 +10,7 @@ pub struct BlockContext {
 	pub height: u64,
 }
 
+#[derive(Clone, Debug)]
 pub struct Pipeline {
 	pool: PgPool,
 	factory_block_id: String,

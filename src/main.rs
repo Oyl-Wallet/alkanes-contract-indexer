@@ -10,6 +10,7 @@ mod coordinator;
 mod pipeline;
 mod poller;
 mod provider;
+mod helpers;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -49,10 +50,10 @@ async fn main() -> Result<()> {
     // Spawn tip poller (always triggers pools fetch; also processes blocks when following tip)
     let tip_provider = provider;
     let poller_pipeline = pipeline.clone();
-    let poller_task = tokio::spawn(async move {
+    let poller_fut = async move {
         let poller = poller::BlockPoller::new(tip_provider, poller_pipeline, cfg.poll_interval_ms);
         poller.run().await;
-    });
+    };
 
     // Spawn catch-up coordinator (sequential processing until tip)
     let coord_provider = provider::build_provider(
@@ -63,16 +64,16 @@ async fn main() -> Result<()> {
     )
     .await?;
     let coordinator = coordinator::CatchUpCoordinator::new(coord_provider, pipeline, progress_store, cfg.start_height);
-    let coordinator_task = tokio::spawn(async move {
+    let coordinator_fut = async move {
         loop {
             let _ = coordinator.run_once().await;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
-    });
+    };
 
     tokio::select! {
-        _ = poller_task => {}
-        _ = coordinator_task => {}
+        _ = poller_fut => {}
+        _ = coordinator_fut => {}
         _ = tokio::signal::ctrl_c() => {
             info!("Shutdown signal received");
         }

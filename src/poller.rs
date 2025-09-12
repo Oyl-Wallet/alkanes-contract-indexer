@@ -1,4 +1,3 @@
-use anyhow::Result;
 use deezel_common::{provider::ConcreteProvider, traits::MetashrewRpcProvider};
 use tokio::time::{sleep, Duration, Instant};
 use tracing::{error, info, warn};

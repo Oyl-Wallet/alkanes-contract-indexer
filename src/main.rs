@@ -1,0 +1,82 @@
+use anyhow::Result;
+use dotenvy::dotenv;
+use tracing::info;
+use tracing_subscriber::{fmt, EnvFilter};
+
+mod config;
+mod db;
+mod progress;
+mod coordinator;
+mod pipeline;
+mod poller;
+mod provider;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenv().ok();
+
+    // Logging
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    fmt().with_env_filter(env_filter).init();
+
+    // Config
+    let cfg = config::AppConfig::from_env()?;
+
+    // DB pool
+    let pool = db::connect(&cfg.database_url, 10).await?;
+    info!("Connected to Postgres");
+
+    // Provider
+    let provider = provider::build_provider(
+        cfg.bitcoin_rpc_url.clone(),
+        cfg.sandshrew_rpc_url.clone(),
+        cfg.esplora_url.clone(),
+        cfg.network_provider.clone(),
+    )
+    .await?;
+
+    // Pipeline and poller
+    // Bootstrap kv storage used for progress tracking
+    progress::ensure_kv_table(&pool).await?;
+
+    let pipeline = pipeline::Pipeline::new(
+        pool.clone(),
+        cfg.factory_block_id.clone(),
+        cfg.factory_tx_id.clone(),
+    );
+    let progress_store = progress::ProgressStore::new(pool.clone());
+
+    // Spawn tip poller (always triggers pools fetch; also processes blocks when following tip)
+    let tip_provider = provider;
+    let poller_pipeline = pipeline.clone();
+    let poller_task = tokio::spawn(async move {
+        let poller = poller::BlockPoller::new(tip_provider, poller_pipeline, cfg.poll_interval_ms);
+        poller.run().await;
+    });
+
+    // Spawn catch-up coordinator (sequential processing until tip)
+    let coord_provider = provider::build_provider(
+        cfg.bitcoin_rpc_url.clone(),
+        cfg.sandshrew_rpc_url.clone(),
+        cfg.esplora_url.clone(),
+        cfg.network_provider.clone(),
+    )
+    .await?;
+    let coordinator = coordinator::CatchUpCoordinator::new(coord_provider, pipeline, progress_store, cfg.start_height);
+    let coordinator_task = tokio::spawn(async move {
+        loop {
+            let _ = coordinator.run_once().await;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    });
+
+    tokio::select! {
+        _ = poller_task => {}
+        _ = coordinator_task => {}
+        _ = tokio::signal::ctrl_c() => {
+            info!("Shutdown signal received");
+        }
+    }
+
+    Ok(())
+}

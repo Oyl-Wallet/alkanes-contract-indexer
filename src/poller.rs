@@ -1,4 +1,4 @@
-use deezel_common::{provider::ConcreteProvider, traits::MetashrewRpcProvider};
+use deezel_common::provider::ConcreteProvider;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration, Instant};
 use tracing::{error, info, warn};
@@ -42,7 +42,7 @@ impl BlockPoller {
                             // If we are not running catch-up, begin processing the current tip immediately
                             if self.start_height.is_none() {
                                 info!(height, "new block detected");
-                                if let Err(e) = self.pipeline.process_block_sequential(BlockContext { height }).await {
+                                if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height }).await {
                                     error!(height, error = %e, "block processing failed");
                                 }
                             }
@@ -58,7 +58,7 @@ impl BlockPoller {
                             }
                             for h in (prev + 1)..=height {
                                 info!(height = h, "new block detected");
-                                if let Err(e) = self.pipeline.process_block_sequential(BlockContext { height: h }).await {
+                                if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height: h }).await {
                                     error!(height = h, error = %e, "block processing failed");
                                 }
                                 last_height = Some(h);

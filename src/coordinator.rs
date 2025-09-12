@@ -1,17 +1,17 @@
 use anyhow::Result;
-use deezel_common::traits::MetashrewRpcProvider;
+use deezel_common::traits::{MetashrewRpcProvider, BitcoinRpcProvider, EsploraProvider};
 use tracing::{info, error};
 
 use crate::{pipeline::{BlockContext, Pipeline}, progress::ProgressStore, helpers::height::canonical_tip_height};
 
-pub struct CatchUpCoordinator<P: MetashrewRpcProvider> {
+pub struct CatchUpCoordinator<P: MetashrewRpcProvider + BitcoinRpcProvider + EsploraProvider + Send + Sync> {
     provider: P,
     pipeline: Pipeline,
     progress: ProgressStore,
     start_height: Option<u64>,
 }
 
-impl<P: MetashrewRpcProvider> CatchUpCoordinator<P> {
+impl<P: MetashrewRpcProvider + BitcoinRpcProvider + EsploraProvider + Send + Sync> CatchUpCoordinator<P> {
     pub fn new(provider: P, pipeline: Pipeline, progress: ProgressStore, start_height: Option<u64>) -> Self {
         Self { provider, pipeline, progress, start_height }
     }
@@ -36,7 +36,7 @@ impl<P: MetashrewRpcProvider> CatchUpCoordinator<P> {
 
         for h in next..=tip {
             info!(height = h, "catch-up: processing block sequentially");
-            if let Err(e) = self.pipeline.process_block_sequential(BlockContext { height: h }).await {
+            if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height: h }).await {
                 error!(height = h, error = %e, "catch-up block processing failed");
                 break;
             }

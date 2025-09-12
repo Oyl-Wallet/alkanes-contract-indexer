@@ -1,9 +1,11 @@
 use anyhow::Result;
 use deezel_common::provider::ConcreteProvider;
+use deezel_common::traits::{BitcoinRpcProvider, EsploraProvider};
 use sqlx::PgPool;
 use tracing::info;
 use crate::helpers::pools::fetch_all_pools_with_details;
 use crate::db::{pools as db_pools, pool_state as db_pool_state};
+use crate::helpers::opreturn::collect_block_opreturns;
 
 #[derive(Clone, Debug)]
 pub struct BlockContext {
@@ -89,26 +91,18 @@ impl Pipeline {
 	}
 
 	// Sequential per-block processing (historical and then following tip)
-	pub async fn process_block_sequential(&self, ctx: BlockContext) -> Result<()> {
-		let pool_clone_b = self.pool.clone();
-		let pool_clone_c = self.pool.clone();
+	pub async fn process_block_sequential<P>(&self, provider: &P, ctx: BlockContext) -> Result<()>
+	where
+		P: BitcoinRpcProvider + EsploraProvider + Send + Sync,
+	{
+		// 1) Resolve block hash via bitcoind
+		let block_hash = provider.get_block_hash(ctx.height).await?;
 
-		let collect_and_decode = tokio::spawn(async move {
-			let _ = pool_clone_b;
-			// TODO: get block txs, filter OP_RETURN, decode protostones, stage writes
-			Ok::<_, anyhow::Error>(())
-		});
+		// 2) Collect OP_RETURN txs with their index efficiently via Esplora paging
+		let op_returns = collect_block_opreturns(provider, &block_hash).await?;
+		info!(height = ctx.height, txs = op_returns.len(), "OP_RETURN txs collected for block");
 
-		let trace_calls = tokio::spawn(async move {
-			let _ = pool_clone_c;
-			// TODO: trace each tx, collect events, stage writes
-			Ok::<_, anyhow::Error>(())
-		});
-
-		let (b, c) = tokio::join!(collect_and_decode, trace_calls);
-		b??;
-		c??;
-		info!(height = ctx.height, "block processed sequentially (placeholders)");
+		// TODO: decode protostones and trace calls in subsequent steps
 		Ok(())
 	}
 }

@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         cfg.factory_tx_id.clone(),
     );
     let progress_store = progress::ProgressStore::new(pool.clone());
-    let last_processed = progress_store.get_last_processed_height().await?;
+    let _last_processed = progress_store.get_last_processed_height().await?;
 
     // Spawn tip poller (always triggers pools fetch; also processes blocks when following tip)
     let tip_provider = provider;

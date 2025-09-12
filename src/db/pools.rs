@@ -1,13 +1,6 @@
 use anyhow::Result;
 use sqlx::Row;
 
-#[derive(Debug, Clone)]
-pub struct PoolRowIdMapEntry {
-    pub pool_block_id: String,
-    pub pool_tx_id: String,
-    pub id: String,
-}
-
 pub async fn get_existing_pools_for_factory(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     factory_block_id: &str,

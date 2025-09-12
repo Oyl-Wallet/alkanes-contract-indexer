@@ -3,7 +3,7 @@ use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration, Instant};
 use tracing::{error, info, warn};
 
-use crate::pipeline::{BlockContext, Pipeline};
+use crate::{pipeline::{BlockContext, Pipeline}, helpers::height::canonical_tip_height};
 
 pub struct BlockPoller {
     provider: ConcreteProvider,
@@ -29,7 +29,7 @@ impl BlockPoller {
         let mut backoff_ms: u64 = self.poll_interval_ms.max(250);
         loop {
             let tick_start = Instant::now();
-            match self.provider.get_metashrew_height().await {
+            match canonical_tip_height(&self.provider).await {
                 Ok(height) => {
                     backoff_ms = self.poll_interval_ms; // reset on success
                     match last_height {

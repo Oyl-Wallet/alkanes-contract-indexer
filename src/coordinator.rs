@@ -2,7 +2,7 @@ use anyhow::Result;
 use deezel_common::traits::MetashrewRpcProvider;
 use tracing::{info, error};
 
-use crate::{pipeline::{BlockContext, Pipeline}, progress::ProgressStore};
+use crate::{pipeline::{BlockContext, Pipeline}, progress::ProgressStore, helpers::height::canonical_tip_height};
 
 pub struct CatchUpCoordinator<P: MetashrewRpcProvider> {
     provider: P,
@@ -23,7 +23,7 @@ impl<P: MetashrewRpcProvider> CatchUpCoordinator<P> {
             return Ok(());
         }
 
-        let tip = self.provider.get_metashrew_height().await?;
+        let tip = canonical_tip_height(&self.provider).await?;
         let last = self.progress.get_last_processed_height().await?;
 
         let next = match (last, self.start_height) {

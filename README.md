@@ -3,7 +3,7 @@
 A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs to decode and index Alkanes-related data, and writes results to Postgres. It leverages the deezel toolkit for all Alkanes/Bitcoin RPC interactions.
 
 ### Highlights
-- **Background polling**: Reliable loop that queries `metashrew_height`, with exponential backoff and reorg awareness.
+- **Background polling**: Reliable loop that queries Metashrew and derives a canonical tip height (`metashrew_height - 1`), with exponential backoff and reorg awareness.
 - **Pools/state refresh on new tip**: When a higher tip is detected, the service first refreshes pools and inserts new `PoolState` snapshots only if values changed.
 - **Concurrent block-processing pipeline**: For each new block height, per-block tasks (placeholders today) run concurrently:
   - collecting block transactions and decoding Protostones
@@ -50,7 +50,12 @@ NETWORK=regtest
 # Poll interval for metashrew height (ms); default 2000
 POLL_INTERVAL_MS=2000
 
-# Optional: start height for historical catch-up. If unset, starts from tip
+# Optional: start height for historical catch-up.
+# - If set: a catch-up coordinator will process sequentially from this height (or
+#   the last persisted progress) up to the current tip. The coordinator starts
+#   only after the poller has initialized tip and refreshed pools.
+# - If unset: no catch-up is performed; the poller immediately processes the
+#   current tip on startup and then continues with subsequent blocks.
 #START_HEIGHT=800000
 
 # Required: Factory contract ID for AMM pools discovery
@@ -111,17 +116,23 @@ The service will:
 1) Connect to Postgres
 2) Construct a deezel provider
 3) Start the `BlockPoller` loop which:
-   - calls `get_metashrew_height()`
+   - reads canonical tip height via `metashrew_height - 1`
    - detects new heights (filling gaps)
    - on first observation (no previous height): triggers `Pipeline::fetch_pools_for_tip(provider, tip)` once
+   - on first observation AND no `START_HEIGHT`: also processes the current tip immediately
    - on height increase: first triggers `Pipeline::fetch_pools_for_tip(provider, tip)`
    - then processes each new block via `Pipeline::process_block_sequential`
    - on no height change: skips pools/state refresh and block processing
-4) Start the catch-up coordinator which:
-   - if there is no last processed height, it waits for the poller to initialize tip (and perform the initial pools/state refresh) before starting
-   - reads `START_HEIGHT` or last stored progress from DB
+4) If `START_HEIGHT` is set, start the catch-up coordinator which:
+   - waits for the poller to initialize tip (and perform the initial pools/state refresh) before starting
+   - reads canonical tip height and computes `[next..=tip]` from `START_HEIGHT` and the last stored progress from DB
    - sequentially processes `[next..=tip]` via `Pipeline::process_block_sequential`
    - persists `last_processed_height` in `kv_store`
+   - after catch-up, the poller continues processing subsequent new blocks as they arrive
+
+### Metashrew height off-by-one
+- Metashrew's `get_metashrew_height()` reports the next height (tip + 1). The indexer normalizes this by subtracting 1 to obtain the canonical chain tip.
+- Implementation: `helpers/height.rs` provides `canonical_tip_height(provider)` used by both the poller and catch-up coordinator.
 
 Shutdown with Ctrl-C.
 

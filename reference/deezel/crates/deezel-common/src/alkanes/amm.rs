@@ -35,22 +35,44 @@ use super::simulation::SimulationManager;
 
 /// AMM operations manager that leverages enhanced execute functionality
 pub struct AmmManager<P: DeezelProvider> {
-    executor: Arc<EnhancedAlkanesExecutor<P>>,
+    /// Underlying provider used for RPC calls (simulate, execute, etc.)
+    provider: Arc<P>,
     simulation: Option<Arc<SimulationManager<P>>>,
 }
 
 impl<P: DeezelProvider> AmmManager<P> {
+    async fn execute_enhanced(&self, params: EnhancedExecuteParams) -> Result<EnhancedExecuteResult> {
+        use crate::alkanes::types::ExecutionState;
+        // Create a temporary executor bound to the provider for each call
+        // We need a &mut dyn DeezelProvider, so clone_box to a boxed provider, then borrow mut
+        let mut boxed = self.provider.clone_box();
+        let mut exec = super::execute::EnhancedAlkanesExecutor::new(&mut *boxed);
+        let state = exec.execute(params.clone()).await?;
+        match state {
+            ExecutionState::ReadyToSign(s) => exec.resume_execution(s, &params).await,
+            ExecutionState::ReadyToSignCommit(s) => {
+                let state2 = exec.resume_commit_execution(s).await?;
+                if let ExecutionState::ReadyToSignReveal(s2) = state2 {
+                    exec.resume_reveal_execution(s2).await
+                } else {
+                    Err(crate::DeezelError::Other("Unexpected state after commit".to_string()))
+                }
+            }
+            ExecutionState::ReadyToSignReveal(s) => exec.resume_reveal_execution(s).await,
+            ExecutionState::Complete(result) => Ok(result),
+        }
+    }
     /// Create a new AMM manager
-    pub fn new(executor: Arc<EnhancedAlkanesExecutor<P>>) -> Self {
-        Self { executor, simulation: None }
+    pub fn new(provider: Arc<P>) -> Self {
+        Self { provider, simulation: None }
     }
 
     /// Create a new AMM manager with simulation capability
     pub fn new_with_simulation(
-        executor: Arc<EnhancedAlkanesExecutor<P>>,
+        provider: Arc<P>,
         simulation: Arc<SimulationManager<P>>,
     ) -> Self {
-        Self { executor, simulation: Some(simulation) }
+        Self { provider, simulation: Some(simulation) }
     }
 
     /// Create a new liquidity pool using enhanced execute functionality
@@ -101,6 +123,7 @@ impl<P: DeezelProvider> AmmManager<P> {
         let execute_params = EnhancedExecuteParams {
             fee_rate: params.fee_rate,
             to_addresses: vec![], // Will be populated with default addresses
+            from_addresses: None,
             change_address: None,
             input_requirements,
             protostones,
@@ -109,11 +132,10 @@ impl<P: DeezelProvider> AmmManager<P> {
             trace_enabled: true,
             mine_enabled: false,
             auto_confirm: true,
-            rebar: false,
         };
         
         // Execute pool creation using enhanced execute
-        let result = self.executor.execute(execute_params).await?;
+        let result = self.execute_enhanced(execute_params).await?;
         
         info!("Liquidity pool created successfully using enhanced execute");
         info!("Pool creation reveal TXID: {}", result.reveal_txid);
@@ -195,6 +217,7 @@ impl<P: DeezelProvider> AmmManager<P> {
         let execute_params = EnhancedExecuteParams {
             fee_rate: params.fee_rate,
             to_addresses: vec![], // Will be populated with default addresses
+            from_addresses: None,
             change_address: None,
             input_requirements,
             protostones,
@@ -203,11 +226,10 @@ impl<P: DeezelProvider> AmmManager<P> {
             trace_enabled: true,
             mine_enabled: false,
             auto_confirm: true,
-            rebar: false,
         };
         
         // Execute liquidity addition using enhanced execute
-        let result = self.executor.execute(execute_params).await?;
+        let result = self.execute_enhanced(execute_params).await?;
         
         info!("Liquidity added successfully using enhanced execute");
         info!("Add liquidity reveal TXID: {}", result.reveal_txid);
@@ -262,6 +284,7 @@ impl<P: DeezelProvider> AmmManager<P> {
         let execute_params = EnhancedExecuteParams {
             fee_rate: params.fee_rate,
             to_addresses: vec![], // Will be populated with default addresses
+            from_addresses: None,
             change_address: None,
             input_requirements,
             protostones,
@@ -270,11 +293,10 @@ impl<P: DeezelProvider> AmmManager<P> {
             trace_enabled: true,
             mine_enabled: false,
             auto_confirm: true,
-            rebar: false,
         };
         
         // Execute liquidity removal using enhanced execute
-        let result = self.executor.execute(execute_params).await?;
+        let result = self.execute_enhanced(execute_params).await?;
         
         info!("Liquidity removed successfully using enhanced execute");
         info!("Remove liquidity reveal TXID: {}", result.reveal_txid);
@@ -346,6 +368,7 @@ impl<P: DeezelProvider> AmmManager<P> {
         let execute_params = EnhancedExecuteParams {
             fee_rate: params.fee_rate,
             to_addresses: vec![], // Will be populated with default addresses
+            from_addresses: None,
             change_address: None,
             input_requirements,
             protostones,
@@ -354,11 +377,10 @@ impl<P: DeezelProvider> AmmManager<P> {
             trace_enabled: true,
             mine_enabled: false,
             auto_confirm: true,
-            rebar: false,
         };
         
         // Execute token swap using enhanced execute
-        let result = self.executor.execute(execute_params).await?;
+        let result = self.execute_enhanced(execute_params).await?;
         
         info!("Token swap completed successfully using enhanced execute");
         info!("Swap reveal TXID: {}", result.reveal_txid);
@@ -409,12 +431,10 @@ impl<P: DeezelProvider> AmmManager<P> {
         Ok(Vec::new())
     }
 
-    /// Get all pools via raw simulate request (object-style), using a single Sandshrew URL through provider
+    /// Get all pools via raw simulate request (object-style), using the provided Sandshrew/Metashrew URL
     /// This mirrors the TS request you shared and returns decoded IDs.
-    pub async fn get_all_pools_via_raw_simulate(&self, factory_block: String, factory_tx: String) -> Result<GetAllPoolsResult> {
-        let sim = self.simulation.as_ref()
-            .ok_or_else(|| crate::DeezelError::Other("Simulation manager not configured".to_string()))?;
-
+    pub async fn get_all_pools_via_raw_simulate(&self, url: &str, factory_block: String, factory_tx: String) -> Result<GetAllPoolsResult> {
+        // Build request identical to CLI's GetAllPools
         let params = serde_json::json!([{
             "alkanes": [],
             "transaction": "0x",
@@ -428,7 +448,7 @@ impl<P: DeezelProvider> AmmManager<P> {
             "vout": 0
         }]);
 
-        let result = sim.simulate_raw_request(params).await?;
+        let result = self.provider.call(url, "alkanes_simulate", params, 1).await?;
         let data_hex = result
             .get("execution")
             .and_then(|e| e.get("data"))
@@ -440,10 +460,8 @@ impl<P: DeezelProvider> AmmManager<P> {
     }
 
     /// For each pool id returned by get_all_pools_via_raw_simulate, fetch details via raw simulate
-    pub async fn get_all_pools_details_via_raw_simulate(&self, factory_block: String, factory_tx: String) -> Result<AllPoolsDetailsResult> {
-        let all = self.get_all_pools_via_raw_simulate(factory_block, factory_tx).await?;
-        let sim = self.simulation.as_ref()
-            .ok_or_else(|| crate::DeezelError::Other("Simulation manager not configured".to_string()))?;
+    pub async fn get_all_pools_details_via_raw_simulate(&self, url: &str, factory_block: String, factory_tx: String) -> Result<AllPoolsDetailsResult> {
+        let all = self.get_all_pools_via_raw_simulate(url, factory_block, factory_tx).await?;
 
         let mut out = Vec::new();
         for id in &all.pools {
@@ -460,7 +478,7 @@ impl<P: DeezelProvider> AmmManager<P> {
                 "vout": 0
             }]);
 
-            if let Ok(res) = sim.simulate_raw_request(params).await {
+            if let Ok(res) = self.provider.call(url, "alkanes_simulate", params, 1).await {
                 if let Some(data) = res.get("execution").and_then(|e| e.get("data")).and_then(|v| v.as_str()) {
                     if let Some(details) = decode_pool_details(data) {
                         out.push(PoolDetailsWithId {
@@ -649,16 +667,19 @@ fn parse_alkane_id_from_hex(hex_str: &str) -> Option<TypesAlkaneId> {
     tx_bytes.reverse();
 
     // Take low 8 bytes to fit into u64, matching provider's use of lo parts
+    // After reversing to big-endian, the low 8 bytes are at the tail
     let block = {
-        let slice = if block_bytes.len() >= 8 { &block_bytes[0..8] } else { return None; };
+        if block_bytes.len() < 8 { return None; }
+        let start = block_bytes.len() - 8;
         let mut buf = [0u8; 8];
-        buf.copy_from_slice(slice);
+        buf.copy_from_slice(&block_bytes[start..]);
         u64::from_be_bytes(buf)
     };
     let tx = {
-        let slice = if tx_bytes.len() >= 8 { &tx_bytes[0..8] } else { return None; };
+        if tx_bytes.len() < 8 { return None; }
+        let start = tx_bytes.len() - 8;
         let mut buf = [0u8; 8];
-        buf.copy_from_slice(slice);
+        buf.copy_from_slice(&tx_bytes[start..]);
         u64::from_be_bytes(buf)
     };
 

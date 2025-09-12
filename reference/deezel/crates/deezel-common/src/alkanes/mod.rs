@@ -13,5 +13,7 @@ pub mod envelope;
 pub mod inspector;
 pub mod protorunes;
 pub mod simulation;
+pub mod amm;
 
 pub use types::*;
+pub use amm::AmmManager;

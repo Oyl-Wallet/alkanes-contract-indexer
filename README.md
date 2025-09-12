@@ -16,7 +16,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/db.rs`: Postgres pool initialization and re-exports DB submodules.
 - `src/db/pools.rs`: All SQL for `Pool` (read existing, batch insert, resolve IDs for pairs).
 - `src/db/pool_state.rs`: All SQL for `PoolState` (fetch latest per pool, batch insert snapshots).
-- `src/helpers/pools.rs`: Helper utilities to simulate and decode pools (factory `get_all_pools`, per-pool `details`).
+- `src/helpers/pools.rs`: Uses deezel's `AmmManager` helpers to simulate via Sandshrew and return decoded pools and details (no local decoders).
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
@@ -60,8 +60,13 @@ FACTORY_TX_ID=0
 ```
 
 Notes:
-- The service builds a deezel `ConcreteProvider` using `SANDSHREW_RPC_URL` for Metashrew/Sandshrew calls.
+- The service builds a deezel `ConcreteProvider`. Pool discovery calls pass `SANDSHREW_RPC_URL` directly to deezel's `AmmManager` helpers.
 - `BITCOIN_RPC_URL` and `ESPLORA_URL` are optional; leave unset for Sandshrew-only routing.
+
+## Update deezel-common to latest
+```bash
+cargo update -p deezel-common
+```
 
 ### Build
 ```bash
@@ -121,15 +126,26 @@ Shutdown with Ctrl-C.
 - Poller, pipeline pools fetch, and coordinator are implemented. The per-block tasks are placeholders and will later:
   - collect block txs, filter OP_RETURN, decode Protostones, stage writes
   - trace txs to collect contract events and stage writes
-- A minimal `kv_store` table is auto-created for progress tracking. The pool discovery and snapshotting flow:
-  - simulates factory to get all pools
-  - simulates each pool to get details
+- A minimal `kv_store` table is auto-created for progress tracking. The pool discovery and snapshotting flow (via deezel's `AmmManager`):
+  - calls `get_all_pools_via_raw_simulate(&url, factory_block, factory_tx)` using `SANDSHREW_RPC_URL`
+  - calls `get_all_pools_details_via_raw_simulate(&url, ...)` to fetch and decode each pool's details
   - batch upserts `Pool` and inserts new `PoolState` snapshots on change
+
+### Pool discovery implementation details
+- We rely on deezel-common's `alkanes::amm::AmmManager` helpers, which accept a Sandshrew/Metashrew URL parameter.
+- The indexer reads `SANDSHREW_RPC_URL` from the environment and passes it to these helpers; we do not mutate process env at runtime.
+- Local hex decoding utilities have been removed from `src/helpers/pools.rs` to avoid drift from upstream decode logic.
 
 ### Troubleshooting
 - Verify `DATABASE_URL` is reachable.
 - Ensure `SANDSHREW_RPC_URL` points to a running endpoint that supports `metashrew_height`.
 - Increase `POLL_INTERVAL_MS` if your environment is resource-constrained.
+- Enable debug logs to inspect simulate responses:
+  - `RUST_LOG=alkanes_contract_indexer=debug,deezel_common=debug cargo run`
+- If you see `Other error: Failed to decode get_all_pools result`:
+  - Confirm `SANDSHREW_RPC_URL` is correct (no localhost fallback).
+  - Ensure the factory IDs (`FACTORY_BLOCK_ID`, `FACTORY_TX_ID`) are correct for your network.
+  - Upstream can sometimes return placeholder IDs like `{"block":"0","tx":"0"}`; these will cause per-pool detail simulate to fail with `unexpected end-of-file` and are skipped upstream when present.
 
 ### References
 - deezel toolkit (used for RPC/provider): [`Sprimage/deezel`](https://github.com/Sprimage/deezel)

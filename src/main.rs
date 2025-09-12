@@ -23,6 +23,8 @@ async fn main() -> Result<()> {
     // Config
     let cfg = config::AppConfig::from_env()?;
 
+    // Downstream helpers now accept URL parameters directly; no env mutation needed.
+
     // DB pool
     let pool = db::connect(&cfg.database_url, 10).await?;
     info!("Connected to Postgres");

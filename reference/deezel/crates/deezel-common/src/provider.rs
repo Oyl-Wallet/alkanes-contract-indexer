@@ -1271,7 +1271,7 @@ impl BitcoinRpcProvider for ConcreteProvider {
 #[async_trait(?Send)]
 impl MetashrewRpcProvider for ConcreteProvider {
     async fn get_metashrew_height(&self) -> Result<u64> {
-        let json = self.call(&self.metashrew_rpc_url, "metashrew_height", serde_json::Value::Null, 1).await?;
+        let json = self.call(&self.metashrew_rpc_url, "metashrew_height", serde_json::json!([]), 1).await?;
         log::debug!("get_metashrew_height response: {:?}", json);
         if let Some(count) = json.as_u64() {
             return Ok(count);

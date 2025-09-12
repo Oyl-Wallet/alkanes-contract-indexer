@@ -54,7 +54,9 @@ async fn main() -> Result<()> {
     // Spawn tip poller (always triggers pools fetch; also processes blocks when following tip)
     let tip_provider = provider;
     let poller_pipeline = pipeline.clone();
-    let (poller_init_tx, maybe_init_rx) = if last_processed.is_none() {
+    // If we have a configured start height, coordinate catch-up to start only after
+    // the poller has initialized metashrew height and refreshed pools.
+    let (poller_init_tx, maybe_init_rx) = if cfg.start_height.is_some() {
         let (tx, rx) = oneshot::channel::<()>();
         (Some(tx), Some(rx))
     } else {
@@ -66,6 +68,7 @@ async fn main() -> Result<()> {
             poller_pipeline,
             cfg.poll_interval_ms,
             poller_init_tx,
+            cfg.start_height,
         );
         poller.run().await;
     };

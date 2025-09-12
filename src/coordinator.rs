@@ -18,12 +18,18 @@ impl<P: MetashrewRpcProvider> CatchUpCoordinator<P> {
 
     // Run a single pass: compute [next..=tip] to process sequentially and advance progress
     pub async fn run_once(&self) -> Result<()> {
+        // Only run catch-up when a start height is provided.
+        if self.start_height.is_none() {
+            return Ok(());
+        }
+
         let tip = self.provider.get_metashrew_height().await?;
         let last = self.progress.get_last_processed_height().await?;
+
         let next = match (last, self.start_height) {
             (Some(l), _) => l.saturating_add(1),
             (None, Some(s)) => s,
-            (None, None) => tip, // nothing to catch up; begin following tip
+            (None, None) => return Ok(()),
         };
 
         if next > tip { return Ok(()); }

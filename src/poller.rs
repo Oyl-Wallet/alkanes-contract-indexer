@@ -10,6 +10,7 @@ pub struct BlockPoller {
     pipeline: Pipeline,
     poll_interval_ms: u64,
     init_signal: Option<oneshot::Sender<()>>, // fired once after initial pools refresh + height init
+    start_height: Option<u64>,
 }
 
 impl BlockPoller {
@@ -18,8 +19,9 @@ impl BlockPoller {
         pipeline: Pipeline,
         poll_interval_ms: u64,
         init_signal: Option<oneshot::Sender<()>>,
+        start_height: Option<u64>,
     ) -> Self {
-        Self { provider, pipeline, poll_interval_ms, init_signal }
+        Self { provider, pipeline, poll_interval_ms, init_signal, start_height }
     }
 
     pub async fn run(mut self) {
@@ -37,6 +39,13 @@ impl BlockPoller {
                                 error!(height, error = %e, "fetch_pools_for_tip failed");
                             }
                             info!(height, "initialized metashrew height");
+                            // If we are not running catch-up, begin processing the current tip immediately
+                            if self.start_height.is_none() {
+                                info!(height, "new block detected");
+                                if let Err(e) = self.pipeline.process_block_sequential(BlockContext { height }).await {
+                                    error!(height, error = %e, "block processing failed");
+                                }
+                            }
                             last_height = Some(height);
                             if let Some(tx) = self.init_signal.take() {
                                 let _ = tx.send(());

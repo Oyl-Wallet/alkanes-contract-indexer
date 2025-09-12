@@ -2,6 +2,7 @@ use anyhow::Result;
 use dotenvy::dotenv;
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
+use tokio::sync::oneshot;
 
 mod config;
 mod db;
@@ -48,12 +49,24 @@ async fn main() -> Result<()> {
         cfg.factory_tx_id.clone(),
     );
     let progress_store = progress::ProgressStore::new(pool.clone());
+    let last_processed = progress_store.get_last_processed_height().await?;
 
     // Spawn tip poller (always triggers pools fetch; also processes blocks when following tip)
     let tip_provider = provider;
     let poller_pipeline = pipeline.clone();
+    let (poller_init_tx, maybe_init_rx) = if last_processed.is_none() {
+        let (tx, rx) = oneshot::channel::<()>();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let poller_fut = async move {
-        let poller = poller::BlockPoller::new(tip_provider, poller_pipeline, cfg.poll_interval_ms);
+        let poller = poller::BlockPoller::new(
+            tip_provider,
+            poller_pipeline,
+            cfg.poll_interval_ms,
+            poller_init_tx,
+        );
         poller.run().await;
     };
 
@@ -67,6 +80,9 @@ async fn main() -> Result<()> {
     .await?;
     let coordinator = coordinator::CatchUpCoordinator::new(coord_provider, pipeline, progress_store, cfg.start_height);
     let coordinator_fut = async move {
+        if let Some(rx) = maybe_init_rx {
+            let _ = rx.await; // wait for initial pools refresh + height init
+        }
         loop {
             let _ = coordinator.run_once().await;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;

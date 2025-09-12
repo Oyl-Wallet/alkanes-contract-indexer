@@ -4,8 +4,8 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 
 ### Highlights
 - **Background polling**: Reliable loop that queries `metashrew_height`, with exponential backoff and reorg awareness.
-- **Concurrent pipeline**: Triggers per-block tasks (placeholders today) for:
-  - fetching pools state
+- **Pools/state refresh on new tip**: When a higher tip is detected, the service first refreshes pools and inserts new `PoolState` snapshots only if values changed.
+- **Concurrent block-processing pipeline**: For each new block height, per-block tasks (placeholders today) run concurrently:
   - collecting block transactions and decoding Protostones
   - tracing contract calls for txs to collect events
 - **Postgres-ready**: A connection pool is initialized; tasks will later batch-write by `blockHeight` and `txid`.
@@ -113,9 +113,12 @@ The service will:
 3) Start the `BlockPoller` loop which:
    - calls `get_metashrew_height()`
    - detects new heights (filling gaps)
-   - always triggers `Pipeline::fetch_pools_for_tip(provider, tip)` on each new height
-   - note: pools fetch runs for every tip height even during catch-up
+   - on first observation (no previous height): triggers `Pipeline::fetch_pools_for_tip(provider, tip)` once
+   - on height increase: first triggers `Pipeline::fetch_pools_for_tip(provider, tip)`
+   - then processes each new block via `Pipeline::process_block_sequential`
+   - on no height change: skips pools/state refresh and block processing
 4) Start the catch-up coordinator which:
+   - if there is no last processed height, it waits for the poller to initialize tip (and perform the initial pools/state refresh) before starting
    - reads `START_HEIGHT` or last stored progress from DB
    - sequentially processes `[next..=tip]` via `Pipeline::process_block_sequential`
    - persists `last_processed_height` in `kv_store`

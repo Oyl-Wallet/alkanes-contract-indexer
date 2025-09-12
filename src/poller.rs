@@ -1,4 +1,5 @@
 use deezel_common::{provider::ConcreteProvider, traits::MetashrewRpcProvider};
+use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -8,14 +9,20 @@ pub struct BlockPoller {
     provider: ConcreteProvider,
     pipeline: Pipeline,
     poll_interval_ms: u64,
+    init_signal: Option<oneshot::Sender<()>>, // fired once after initial pools refresh + height init
 }
 
 impl BlockPoller {
-    pub fn new(provider: ConcreteProvider, pipeline: Pipeline, poll_interval_ms: u64) -> Self {
-        Self { provider, pipeline, poll_interval_ms }
+    pub fn new(
+        provider: ConcreteProvider,
+        pipeline: Pipeline,
+        poll_interval_ms: u64,
+        init_signal: Option<oneshot::Sender<()>>,
+    ) -> Self {
+        Self { provider, pipeline, poll_interval_ms, init_signal }
     }
 
-    pub async fn run(self) {
+    pub async fn run(mut self) {
         let mut last_height: Option<u64> = None;
         let mut backoff_ms: u64 = self.poll_interval_ms.max(250);
         loop {
@@ -23,16 +30,23 @@ impl BlockPoller {
             match self.provider.get_metashrew_height().await {
                 Ok(height) => {
                     backoff_ms = self.poll_interval_ms; // reset on success
-                    // Always fetch pools for the latest tip
-                    if let Err(e) = self.pipeline.fetch_pools_for_tip(&self.provider, height).await {
-                        error!(height, error = %e, "fetch_pools_for_tip failed");
-                    }
                     match last_height {
                         None => {
+                            // On first observation, refresh pools/state once
+                            if let Err(e) = self.pipeline.fetch_pools_for_tip(&self.provider, height).await {
+                                error!(height, error = %e, "fetch_pools_for_tip failed");
+                            }
                             info!(height, "initialized metashrew height");
                             last_height = Some(height);
+                            if let Some(tx) = self.init_signal.take() {
+                                let _ = tx.send(());
+                            }
                         }
                         Some(prev) if height > prev => {
+                            // Before processing new blocks, update pools and states once at the new tip
+                            if let Err(e) = self.pipeline.fetch_pools_for_tip(&self.provider, height).await {
+                                error!(height, error = %e, "fetch_pools_for_tip failed");
+                            }
                             for h in (prev + 1)..=height {
                                 info!(height = h, "new block detected");
                                 if let Err(e) = self.pipeline.process_block_sequential(BlockContext { height: h }).await {

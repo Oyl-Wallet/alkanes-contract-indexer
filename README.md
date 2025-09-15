@@ -5,9 +5,12 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 ### Highlights
 - **Background polling**: Reliable loop that queries Metashrew and derives a canonical tip height (`metashrew_height - 1`), with exponential backoff and reorg awareness.
 - **Pools/state refresh on new tip**: When a higher tip is detected, the service first refreshes pools and inserts new `PoolState` snapshots only if values changed.
-- **Concurrent block-processing pipeline**: For each new block height, per-block tasks (placeholders today) run concurrently:
-  - collecting block transactions and decoding Protostones
-  - tracing contract calls for txs to collect events
+- **Block-processing pipeline**: For each new block height the service now:
+  - resolves the block hash via Bitcoin RPC
+  - fetches ordered txids via JSON-RPC `esplora_block::txids`
+  - fetches transaction info concurrently in batches of 25 via `esplora_tx`
+  - filters transactions for OP_RETURN outputs and logs the count
+  - decodes Runestone/Protostone for OP_RETURN transactions and calls `alkanes_trace` per decoded protostone using 10-way batched parallelism
 - **Postgres-ready**: A connection pool is initialized; tasks will later batch-write by `blockHeight` and `txid`.
 
 ### Repository Structure
@@ -17,6 +20,8 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/db/pools.rs`: All SQL for `Pool` (read existing, batch insert, resolve IDs for pairs).
 - `src/db/pool_state.rs`: All SQL for `PoolState` (fetch latest per pool, batch insert snapshots).
 - `src/helpers/pools.rs`: Uses deezel's `AmmManager` helpers to simulate via Sandshrew and return decoded pools and details (no local decoders).
+- `src/helpers/block.rs`: Block utilities: `canonical_tip_height`, `get_block_hash`, `get_block_txids`, `get_transactions_info` (batched concurrent fetch), and `tx_has_op_return`.
+- `src/helpers/protostone.rs`: Runestone/Protostone decode + trace orchestration.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
@@ -66,6 +71,7 @@ FACTORY_TX_ID=0
 
 Notes:
 - The service builds a deezel `ConcreteProvider`. Pool discovery calls pass `SANDSHREW_RPC_URL` directly to deezel's `AmmManager` helpers.
+- Block tx discovery uses JSON-RPC methods (`esplora_block::txids`, `esplora_tx`) through the provider, preferring `SANDSHREW_RPC_URL` from the environment.
 - `BITCOIN_RPC_URL` and `ESPLORA_URL` are optional; leave unset for Sandshrew-only routing.
 
 ## Update deezel-common to latest
@@ -132,14 +138,51 @@ The service will:
 
 ### Metashrew height off-by-one
 - Metashrew's `get_metashrew_height()` reports the next height (tip + 1). The indexer normalizes this by subtracting 1 to obtain the canonical chain tip.
-- Implementation: `helpers/height.rs` provides `canonical_tip_height(provider)` used by both the poller and catch-up coordinator.
+- Implementation: `helpers/block.rs` provides `canonical_tip_height(provider)` used by both the poller and catch-up coordinator.
 
 Shutdown with Ctrl-C.
 
 ### Current Status
-- Poller, pipeline pools fetch, and coordinator are implemented. The per-block tasks are placeholders and will later:
-  - collect block txs, filter OP_RETURN, decode Protostones, stage writes
-  - trace txs to collect contract events and stage writes
+- Poller, pipeline pools fetch, and coordinator are implemented. Per-block processing currently:
+  - resolves block hash → fetches txids via `esplora_block::txids` → fetches tx info concurrently (25 in-flight) via `esplora_tx`
+  - filters for OP_RETURN transactions and logs the count
+  - decodes Runestone/Protostone for OP_RETURN transactions via `deezel_common::runestone_enhanced::format_runestone_with_decoded_messages`
+  - computes shadow vouts as `start = tx.outputs.len() + 1; vout = start + protostone_index`
+  - calls `alkanes_trace` with little-endian txid and the computed shadow vout
+  - timing logs per block show number of OP_RETURN transactions processed and total elapsed time; per-batch logs include size and success/error counts
+
+### Technical Details
+
+#### Decode and Trace Flow
+The decode/trace flow lives in `src/helpers/protostone.rs` and is invoked from `Pipeline::process_block_sequential`.
+
+1. `process_block_sequential` fetches tx infos and filters for OP_RETURN transactions.
+2. It logs the OP_RETURN count and invokes `decode_and_trace_for_block(provider, &op_return_txs, 32, 16)`.
+3. `decode_and_trace_for_block` processes only OP_RETURN txs using 10-way batched parallelism:
+   - Split OP_RETURN transactions into up to 10 batches (ceil-divided), each batch processed concurrently.
+   - For each tx in a batch: fetch tx hex (Esplora first, fallback to Bitcoin Core) with timeout/backoff; deserialize to `bitcoin::Transaction`.
+   - Decode runestone/protostones using `format_runestone_with_decoded_messages` from deezel.
+   - Compute shadow vouts per protostone: `start = tx.output.len() + 1; vout = start + i`.
+   - Reverse txid to little-endian and call `alkanes_trace` per protostone.
+
+The code is instrumented with INFO logs at each step, plus per-block timing in `process_block_sequential`.
+
+#### Concurrency Model
+The helper currently uses 10 concurrent batches to balance throughput and RPC load. The function signature includes knobs (`_max_decode_in_flight`, `_max_trace_concurrency`) reserved for future fine-grained control, but the default behavior uses fixed 10 batches for simplicity and stability. Per-batch summaries report size, decoded protostones, trace_ok/trace_err, skipped, and elapsed_ms.
+
+#### RPC Endpoints Used
+- `esplora_block::txids` (JSON-RPC) for ordered txids by block hash
+- `esplora_tx` (JSON-RPC) to fetch tx metadata for filtering and basic fields
+- `EsploraProvider::get_tx_hex` or `BitcoinRpcProvider::get_transaction_hex` to obtain raw tx hex reliably
+- `alkanes_trace` (JSON-RPC) for protostone tracing
+
+#### Shadow Vouts
+Shadow vouts are computed as an offset past the concrete outputs of the transaction:
+`start = tx.output.len() + 1; end = start + protostones.len() - 1`.
+For the i-th protostone (0-based), the vout is `start + i`.
+
+#### Endianness
+`alkanes_trace` expects a little-endian txid hex string. The indexer reverses the bytes from the standard big-endian representation before invoking the RPC.
 - A minimal `kv_store` table is auto-created for progress tracking. The pool discovery and snapshotting flow (via deezel's `AmmManager`):
   - calls `get_all_pools_via_raw_simulate(&url, factory_block, factory_tx)` using `SANDSHREW_RPC_URL`
   - calls `get_all_pools_details_via_raw_simulate(&url, ...)` to fetch and decode each pool's details

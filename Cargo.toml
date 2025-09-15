@@ -19,6 +19,7 @@ reqwest = { version = "0.12", features = ["json"] }
 clap = { version = "4.5", features = ["derive"] }
 futures = "0.3"
 hex = "0.4"
+bitcoin = "0.32"
 
 # Deezel libraries (use git until crates are published)
 deezel-common = { git = "https://github.com/Sprimage/deezel", package = "deezel-common", features = ["native-deps"] }

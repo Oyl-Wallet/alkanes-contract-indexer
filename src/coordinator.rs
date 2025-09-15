@@ -1,17 +1,17 @@
 use anyhow::Result;
-use deezel_common::traits::{MetashrewRpcProvider, BitcoinRpcProvider, EsploraProvider};
+use deezel_common::traits::{MetashrewRpcProvider, BitcoinRpcProvider, EsploraProvider, JsonRpcProvider, DeezelProvider};
 use tracing::{info, error};
 
-use crate::{pipeline::{BlockContext, Pipeline}, progress::ProgressStore, helpers::height::canonical_tip_height};
+use crate::{pipeline::{BlockContext, Pipeline}, progress::ProgressStore, helpers::block::canonical_tip_height};
 
-pub struct CatchUpCoordinator<P: MetashrewRpcProvider + BitcoinRpcProvider + EsploraProvider + Send + Sync> {
+pub struct CatchUpCoordinator<P: MetashrewRpcProvider + BitcoinRpcProvider + EsploraProvider + JsonRpcProvider + DeezelProvider + Send + Sync> {
     provider: P,
     pipeline: Pipeline,
     progress: ProgressStore,
     start_height: Option<u64>,
 }
 
-impl<P: MetashrewRpcProvider + BitcoinRpcProvider + EsploraProvider + Send + Sync> CatchUpCoordinator<P> {
+impl<P: MetashrewRpcProvider + BitcoinRpcProvider + EsploraProvider + JsonRpcProvider + DeezelProvider + Send + Sync> CatchUpCoordinator<P> {
     pub fn new(provider: P, pipeline: Pipeline, progress: ProgressStore, start_height: Option<u64>) -> Self {
         Self { provider, pipeline, progress, start_height }
     }

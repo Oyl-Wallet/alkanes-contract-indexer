@@ -79,6 +79,7 @@ name = "alkanes-contract-indexer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bitcoin 0.32.7",
  "clap",
  "deezel-common",
  "dotenvy",

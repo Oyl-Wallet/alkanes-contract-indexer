@@ -3,7 +3,7 @@ use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration, Instant};
 use tracing::{error, info, warn};
 
-use crate::{pipeline::{BlockContext, Pipeline}, helpers::height::canonical_tip_height};
+use crate::{pipeline::{BlockContext, Pipeline}, helpers::block::canonical_tip_height};
 
 pub struct BlockPoller {
     provider: ConcreteProvider,

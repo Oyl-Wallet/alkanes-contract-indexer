@@ -32,11 +32,13 @@ Implements the Runestone/Protostone decode + trace flow with 10-way batched para
   3. Decode runestone/protostones via deezel_common::runestone_enhanced::format_runestone_with_decoded_messages.
   4. Compute shadow vouts: start = tx.output.len() + 1; vout = start + i for i-th protostone.
   5. Reverse txid to little-endian and call alkanes_trace per protostone; collect `decoded_protostones` and `trace_events`.
+     - The trace result is flattened into per-event rows: each `invoke`/`return` is recorded separately with the same shadow `vout` so downstream consumers can match them.
 
 Types:
 - `TxDecodeTraceResult { transaction_id, transaction_json, decoded_protostones, trace_events, has_trace, trace_succeed }`
 - `DecodedProtostoneItem { vout, protostone_index, decoded }`
 - `TraceEventItem { vout, event_type, data, alkane_address_block, alkane_address_tx }`
+  - For `invoke` events, `alkane_address_block/tx` is taken from `data.context.myself.{block,tx}` and converted from hex (e.g. `0x2`) to decimal string (e.g. `2`) for consistency with DB `Pool` identifiers.
 
 Concurrency model:
 - OP_RETURN transactions are split into ceil(total/10) sized chunks; each chunk is processed concurrently. This yields significant end-to-end speedups while keeping RPC pressure bounded.
@@ -50,6 +52,57 @@ Operational considerations:
 - SANDSHREW_RPC_URL is used as the default JSON-RPC endpoint. EsploraProvider will also use a direct HTTP ESPLORA_URL if compiled with native-deps.
 - alkanes_trace expects little-endian txid hex; the helper converts the standard big-endian string before calling.
 - Logs now include per-batch summaries (size, decoded, trace_ok/trace_err, skipped, elapsed_ms) and overall totals with elapsed time.
+
+## poolswap.rs
+Indexes AMM pool swap events from stored trace events and writes structured rows into `PoolSwap`.
+
+- Flow per block:
+  1. Collect `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x3` (swap opcode).
+  2. Extract unique `(poolBlockId, poolTxId)` pairs from those events and batch-fetch their token pairs from `Pool` using `get_pool_tokens_for_pairs`.
+  3. For each candidate invoke event:
+     - Ensure `context.incomingAlkanes` contains one of the pool tokens.
+     - Parse optional desired amounts from `inputs[1]` and `inputs[2]` (hex) when present.
+     - Find the next `return` with the same `vout`, preferring one that returns the opposite token with amount matching `inputs[1]`/`inputs[2]`.
+  4. Compute totals for token0 and token1:
+     - Incoming = sum of `context.incomingAlkanes` for that token on the invoke event.
+     - Outgoing = sum of `response.alkanes` for that token on the return event.
+  5. Infer trade direction:
+     - If token0_out == 0 and token1_in == 0 → selling token0 for token1
+     - Else → selling token1 for token0
+  6. Only persist rows where both sold and bought amounts are > 0.
+  7. Perform a single `replace_pool_swaps` call which deletes existing rows for the block’s txids and inserts the new set.
+
+- Performance:
+  - Token pairs fetched once per block for all pools seen in traces (no per-event DB lookups).
+  - Writes are batched in one transaction for the entire block’s swaps, with automatic chunking of INSERTs to stay under Postgres/sqlx parameter limits.
+
+- Data sources and shapes used:
+  - `TraceEvent` rows produced by `protostone.rs` with fields: `eventType`, `vout`, `alkaneAddressBlock`, `alkaneAddressTx`, and JSON `data` containing `context.inputs`, `context.incomingAlkanes`, `response.alkanes`, etc.
+  - `Pool` table provides canonical token pairs per pool (`token0BlockId/token0TxId`, `token1BlockId/token1TxId`).
+
+- Normalization details:
+  - Token `id.block/tx` and `value` fields may arrive as u128 `{hi,lo}` objects, hex strings (e.g., `"0x2"`), decimal strings, or numbers. The decoder normalizes each to u128 before comparing or summing to avoid false negatives.
+
+- Integration points:
+  - Called from `Pipeline::process_block_sequential` after protostones and trace events are written.
+  - Also exposed via a standalone CLI (`swaps`) to process a specific block.
+
+- Limitations/TODO:
+  - `sellerAddress` is currently not resolved. This requires historical alkane ownership lookup on inputs; the plumbing is left for a future enhancement.
+
+## inspect.rs (CLI)
+Standalone inspector to analyze a single `transactionId`:
+
+```bash
+cargo build --bin inspect
+RUST_LOG=info ./target/debug/inspect <txid> [--verbose-json]
+```
+
+It prints:
+- `AlkaneTransaction` metadata
+- Stored `DecodedProtostone` and `TraceEvent` rows (`--verbose-json` prints pretty JSON)
+- Existing `PoolSwap` rows
+- A simulated pool swap decoding run with detailed logs covering delegatecall/opcode check, pool ID extraction, incoming token presence, strict return matching, and computed swap amounts.
 
 ## Coding Guidelines
 - Error handling: Prefer early returns and clear anyhow::Context messages so upstream callers get actionable logs.

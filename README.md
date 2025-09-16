@@ -11,8 +11,8 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
   - fetches transaction info concurrently in batches of 25 via `esplora_tx`
   - filters transactions for OP_RETURN outputs and logs the count
   - decodes Runestone/Protostone for OP_RETURN transactions and calls `alkanes_trace` per decoded protostone using 10-way batched parallelism
-  - persists results in Postgres in a single transaction per block: upserts `AlkaneTransaction`, replaces `DecodedProtostone` and `TraceEvent` for affected `transactionId`s
-- **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`.
+  - persists results in Postgres in a single transaction per block: upserts `AlkaneTransaction`, replaces `DecodedProtostone` and flattened per-event `TraceEvent` rows for affected `transactionId`s
+- **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`. Large batches are automatically chunked to stay within SQL bind parameter limits.
 
 ### Repository Structure
 - `src/main.rs`: Program entrypoint; initializes config, DB, provider; runs background poller until Ctrl-C.
@@ -23,6 +23,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/helpers/pools.rs`: Uses deezel's `AmmManager` helpers to simulate via Sandshrew; fetches pool IDs via `get_all_pools_via_raw_simulate` and then fetches each pool's details concurrently (10 in-flight) via `get_pool_details_via_raw_simulate` (no local decoders).
 - `src/helpers/block.rs`: Block utilities: `canonical_tip_height`, `get_block_hash`, `get_block_txids`, `get_transactions_info` (batched concurrent fetch), and `tx_has_op_return`.
 - `src/helpers/protostone.rs`: Runestone/Protostone decode + trace orchestration.
+- `src/helpers/poolswap.rs`: PoolSwap indexer that reads `TraceEvent` JSON and `Pool` metadata to derive swaps and write `PoolSwap` rows.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
@@ -138,6 +139,33 @@ The service will:
    - persists `last_processed_height` in `kv_store`
    - after catch-up, the poller continues processing subsequent new blocks as they arrive
 
+### Standalone: PoolSwap indexing for a specific block
+
+You can run only the PoolSwap indexing path for a specific height:
+
+```bash
+cargo run --bin swaps -- --height 840000
+```
+
+This will:
+- Fetch OP_RETURN txs → decode protostones → trace via `alkanes_trace` → upsert `AlkaneTransaction`, `DecodedProtostone`, and per-event `TraceEvent` rows (each `invoke`/`return` is a separate row with `vout`).
+- Batch index PoolSwap rows using router-aware logic:
+  - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x3`.
+  - Use `invoke.alkaneAddressBlock/Tx` (already decimalized) as the pool ID; prefetch token pairs for all referenced pools in the block.
+  - Ensure `context.incomingAlkanes` contains one of the pool tokens.
+  - Extract desired output amounts from `inputs[1]` and/or `inputs[2]` (hex) when present.
+  - Find the next `return` with the same `vout`, preferring one that returns the opposite token and whose amount matches `inputs[1]`/`inputs[2]`.
+  - Compute totals for token0/token1 on invoke/return and infer sell/buy direction; persist only when both amounts > 0.
+- Persist into `PoolSwap` with a single batch write (also chunked under param limits).
+
+Notes on ID/value normalization:
+- Token IDs and values in trace JSON may appear as u128 `{hi,lo}` objects, hex strings (e.g., `"0x2"`), decimal strings, or numbers.
+- The decoder normalizes all of these to u128 before comparison or summation.
+
+Notes:
+- `sellerAddress` is currently left NULL.
+- Requires `Pool` table to be populated with the pools referenced by trace events.
+
 ### Metashrew height off-by-one
 - Metashrew's `get_metashrew_height()` reports the next height (tip + 1). The indexer normalizes this by subtracting 1 to obtain the canonical chain tip.
 - Implementation: `helpers/block.rs` provides `canonical_tip_height(provider)` used by both the poller and catch-up coordinator.
@@ -169,8 +197,8 @@ The decode/trace flow lives in `src/helpers/protostone.rs` and is invoked from `
 4. The pipeline batches and writes:
    - Upsert `"AlkaneTransaction"` rows (blockHeight, transactionId, transactionIndex, hasTrace, traceSucceed, transactionData)
    - Replace `"DecodedProtostone"` rows for affected txids with `(transactionId, vout, protostoneIndex, decoded)`
-   - Replace `"TraceEvent"` rows for affected txids with `(transactionId, vout, eventType, data, alkaneAddressBlock, alkaneAddressTx)`
-   - All writes occur in a single SQL transaction and are indexable by `transactionId`.
+  - Replace `"TraceEvent"` rows for affected txids with `(transactionId, vout, eventType, data, alkaneAddressBlock, alkaneAddressTx)`; one row per event (`invoke`, `return`, etc.). For `invoke`, `alkaneAddress*` is derived from `context.myself` and converted from hex (e.g. `0x2`) to decimal string (e.g. `2`).
+   - All writes occur in a single SQL transaction and are indexable by `transactionId`. Batches are chunked to respect `sqlx`/Postgres parameter limits and avoid panics.
 
 The code is instrumented with INFO logs at each step, plus per-block timing in `process_block_sequential`.
 
@@ -210,6 +238,33 @@ For the i-th protostone (0-based), the vout is `start + i`.
   - Confirm `SANDSHREW_RPC_URL` is correct (no localhost fallback).
   - Ensure the factory IDs (`FACTORY_BLOCK_ID`, `FACTORY_TX_ID`) are correct for your network.
   - Upstream can sometimes return placeholder IDs like `{"block":"0","tx":"0"}`; these will cause per-pool detail simulate to fail with `unexpected end-of-file` and are skipped upstream when present.
+
+### Standalone: Transaction Inspector
+
+Use the inspector to debug a specific `transactionId` and see why it is/isn't decoded as a pool swap.
+
+Build:
+
+```bash
+cargo build --bin inspect
+```
+
+Run:
+
+```bash
+RUST_LOG=info ./target/debug/inspect <txid> [--verbose-json]
+```
+
+What it prints:
+- `AlkaneTransaction` metadata (blockHeight, transactionIndex, hasTrace, traceSucceed)
+- Stored `DecodedProtostone` and `TraceEvent` rows (pretty JSON with `--verbose-json`)
+- Existing `PoolSwap` rows for the tx (if any)
+- A simulated pool swap decoding pass with detailed logs:
+  - candidate `delegatecall` invokes with opcode 3
+  - pool ID from `alkaneAddressBlock/Tx`
+  - incoming alkanes token presence
+  - strict return matching (opposite token and amount match)
+  - computed sold/bought amounts or reasons for skipping
 
 ### References
 - deezel toolkit (used for RPC/provider): [`Sprimage/deezel`](https://github.com/Sprimage/deezel)

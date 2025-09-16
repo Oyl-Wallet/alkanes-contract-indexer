@@ -8,7 +8,8 @@ use crate::helpers::block::{get_block_hash as helper_get_block_hash, get_block_t
 use crate::helpers::protostone::decode_and_trace_for_block;
 use crate::helpers::protostone::TxDecodeTraceResult;
 use crate::db::transactions::{upsert_alkane_transactions, replace_trace_events, replace_decoded_protostones};
-use serde_json::json;
+use crate::helpers::poolswap::index_pool_swaps_for_block;
+use chrono::{TimeZone, Utc};
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -111,6 +112,27 @@ impl Pipeline {
 
 			let elapsed_ms = t0.elapsed().as_millis() as u64;
 			info!(height = ctx.height, op_return_txs = count, elapsed_ms, "decode_and_trace_for_block: done");
+
+			// Build inputs for PoolSwap indexer and run it
+			let mut swap_inputs: Vec<(String, i32, chrono::DateTime<Utc>, serde_json::Value, Vec<serde_json::Value>)> = Vec::new();
+			for (tx_index, r) in results.iter().enumerate() {
+				let ts_opt = r.transaction_json
+					.get("status").and_then(|s| s.get("block_time")).and_then(|v| v.as_i64());
+				let ts = ts_opt
+					.and_then(|secs| Utc.timestamp_opt(secs, 0).single())
+					.unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap());
+				let trace_events_json: Vec<serde_json::Value> = r.trace_events.iter().map(|e| {
+					serde_json::json!({
+						"vout": e.vout,
+						"eventType": e.event_type,
+						"data": e.data,
+						"alkaneAddressBlock": e.alkane_address_block,
+						"alkaneAddressTx": e.alkane_address_tx,
+					})
+				}).collect();
+				swap_inputs.push((r.transaction_id.clone(), tx_index as i32, ts, r.transaction_json.clone(), trace_events_json));
+			}
+			index_pool_swaps_for_block(&self.pool, ctx.height as i32, &swap_inputs).await?;
 		}
 		Ok(())
 	}

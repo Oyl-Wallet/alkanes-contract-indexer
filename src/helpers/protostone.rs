@@ -60,7 +60,7 @@ async fn tx_from_json_or_fetch_hex<P: DeezelProvider + JsonRpcProvider + Bitcoin
         .ok_or_else(|| anyhow::anyhow!("txid missing in tx json"))?;
     // First try EsploraProvider::get_tx_hex (works with native-deps or JSON-RPC proxy), then fall back to bitcoind getrawtransaction
     info!(%txid, "fetching tx hex via EsploraProvider::get_tx_hex");
-    let mut last_err: Option<anyhow::Error> = None;
+    let mut _last_err: Option<anyhow::Error> = None;
     let hex_str = {
         let mut attempt = 0;
         loop {
@@ -69,11 +69,11 @@ async fn tx_from_json_or_fetch_hex<P: DeezelProvider + JsonRpcProvider + Bitcoin
             match timeout(Duration::from_secs(20), fut).await {
                 Ok(Ok(h)) => break h,
                 Ok(Err(e)) => {
-                    last_err = Some(anyhow::anyhow!(e));
+                    _last_err = Some(anyhow::anyhow!(e));
                     warn!(%txid, attempt, "get_tx_hex error; will retry or fall back");
                 }
                 Err(_elapsed) => {
-                    last_err = Some(anyhow::anyhow!("timeout"));
+                    _last_err = Some(anyhow::anyhow!("timeout"));
                     warn!(%txid, attempt, "get_tx_hex timed out; will retry or fall back");
                 }
             }
@@ -90,16 +90,16 @@ async fn tx_from_json_or_fetch_hex<P: DeezelProvider + JsonRpcProvider + Bitcoin
             match timeout(Duration::from_secs(20), fut).await {
                 Ok(Ok(h)) => break h,
                 Ok(Err(e)) => {
-                    last_err = Some(anyhow::anyhow!(e));
+                    _last_err = Some(anyhow::anyhow!(e));
                     warn!(%txid, attempt, "get_transaction_hex error; will retry");
                 }
                 Err(_elapsed) => {
-                    last_err = Some(anyhow::anyhow!("timeout"));
+                    _last_err = Some(anyhow::anyhow!("timeout"));
                     warn!(%txid, attempt, "get_transaction_hex timed out; will retry");
                 }
             }
             if attempt >= 3 {
-                return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("get_transaction_hex failed"))).context("get_transaction_hex call failed");
+                return Err(_last_err.unwrap_or_else(|| anyhow::anyhow!("get_transaction_hex failed"))).context("get_transaction_hex call failed");
             }
             sleep(Duration::from_millis(200 * attempt as u64)).await;
         }
@@ -202,39 +202,66 @@ where
                             let vout = start + i as u32;
                             info!(batch = batch_idx, %txid_be, protostone_idx = i, vout, "calling trace");
                             let job = TraceJob { txid_le_hex: txid_le.clone(), vout, protostone_idx: i };
+                            debug!(batch = batch_idx, %txid_be, protostone_idx = i, "dispatching trace job");
                             decoded_items.push(DecodedProtostoneItem { vout: vout as i32, protostone_index: i as i32, decoded: p.clone() });
                             match trace_call(provider, &url, job).await {
                                 Ok(res) => {
                                     info!(batch = batch_idx, %txid_be, protostone_idx = i, vout, "trace ok");
                                     debug!(result = %res);
                                     has_trace = true;
-                                    let (blk_str, tx_str, ok_status) = if let Ok(trace_parsed) = serde_json::from_value::<deezel_common::alkanes::trace::Trace>(res.clone()) {
-                                        let mut ok = false;
+                                    // Determine success from either structured trace or raw events
+                                    let mut ok_status = false;
+                                    if let Ok(trace_parsed) = serde_json::from_value::<deezel_common::alkanes::trace::Trace>(res.clone()) {
                                         if let Some(first_call) = trace_parsed.calls.first() {
                                             for ev in &first_call.events {
                                                 if let deezel_common::alkanes::trace::Event::Exit(exit) = ev {
                                                     let s = exit.status.to_ascii_lowercase();
-                                                    if s.contains("ok") || s.contains("success") { ok = true; }
+                                                    if s.contains("ok") || s.contains("success") { ok_status = true; }
                                                 }
                                             }
                                         }
-                                        let (blk, txn) = if let Some(first_call) = trace_parsed.calls.first() {
-                                            if let Some(cid) = &first_call.contract_id {
-                                                let blk = cid.block.as_ref().map(|u| u.lo.to_string()).unwrap_or_default();
-                                                let txn = cid.tx.as_ref().map(|u| u.lo.to_string()).unwrap_or_default();
-                                                (blk, txn)
-                                            } else { (String::new(), String::new()) }
-                                        } else { (String::new(), String::new()) };
-                                        (blk, txn, ok)
-                                    } else { (String::new(), String::new(), false) };
+                                    } else if let Some(arr) = res.as_array() {
+                                        for ev in arr {
+                                            let typ = ev.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                                            if typ == "return" {
+                                                let st = ev.get("data").and_then(|d| d.get("status")).and_then(|s| s.as_str()).unwrap_or("").to_ascii_lowercase();
+                                                if st.contains("ok") || st.contains("success") { ok_status = true; }
+                                            }
+                                        }
+                                    }
                                     if ok_status { trace_succeed = true; }
-                                    trace_events.push(TraceEventItem {
-                                        vout: vout as i32,
-                                        event_type: "trace".to_string(),
-                                        data: res,
-                                        alkane_address_block: blk_str,
-                                        alkane_address_tx: tx_str,
-                                    });
+
+                                    // Flatten trace result into individual events for storage/indexing
+                                    if let Some(arr) = res.as_array() {
+                                        for ev in arr {
+                                            let event_type = ev.get("event").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                                            let data = ev.get("data").cloned().unwrap_or_else(|| serde_json::json!({}));
+                                            // Extract alkane address from invoke context; keep empty for others
+                                            let (blk_str, tx_str) = if event_type == "invoke" {
+                                                let blk_hex = data.get("context").and_then(|c| c.get("myself")).and_then(|m| m.get("block")).and_then(|v| v.as_str()).unwrap_or("");
+                                                let tx_hex  = data.get("context").and_then(|c| c.get("myself")).and_then(|m| m.get("tx")).and_then(|v| v.as_str()).unwrap_or("");
+                                                let blk = if blk_hex.is_empty() { String::new() } else { crate::helpers::poolswap::hex_to_dec_u128_str(blk_hex).unwrap_or_else(|_| blk_hex.to_string()) };
+                                                let tx  = if tx_hex.is_empty()  { String::new() } else { crate::helpers::poolswap::hex_to_dec_u128_str(tx_hex).unwrap_or_else(|_| tx_hex.to_string()) };
+                                                (blk, tx)
+                                            } else { (String::new(), String::new()) };
+                                            trace_events.push(TraceEventItem {
+                                                vout: vout as i32,
+                                                event_type,
+                                                data,
+                                                alkane_address_block: blk_str,
+                                                alkane_address_tx: tx_str,
+                                            });
+                                        }
+                                    } else {
+                                        // Fallback: store whole trace if shape is unexpected
+                                        trace_events.push(TraceEventItem {
+                                            vout: vout as i32,
+                                            event_type: "trace".to_string(),
+                                            data: res,
+                                            alkane_address_block: String::new(),
+                                            alkane_address_tx: String::new(),
+                                        });
+                                    }
                                 }
                                 Err(e) => { error!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %e, "trace failed"); }
                             }

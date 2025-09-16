@@ -93,4 +93,40 @@ pub async fn get_pool_ids_for_pairs(
     Ok(map)
 }
 
+/// Fetch token pairs (token0, token1) for a set of pool (block, tx) pairs.
+/// Returns a map keyed by (poolBlockId, poolTxId) -> ((token0BlockId, token0TxId), (token1BlockId, token1TxId)).
+pub async fn get_pool_tokens_for_pairs(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    pairs: &[(String, String)],
+) -> Result<std::collections::HashMap<(String, String), ((String, String), (String, String))>> {
+    if pairs.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let block_ids: Vec<&str> = pairs.iter().map(|(pb, _)| pb.as_str()).collect();
+    let tx_ids: Vec<&str> = pairs.iter().map(|(_, pt)| pt.as_str()).collect();
+    let rows = sqlx::query(
+        r#"select "poolBlockId", "poolTxId", "token0BlockId", "token0TxId", "token1BlockId", "token1TxId"
+           from "Pool"
+           where ("poolBlockId", "poolTxId") in (
+                select pb, pt from unnest($1::text[], $2::text[]) as t(pb, pt)
+           )"#
+    )
+    .bind(block_ids.as_slice())
+    .bind(tx_ids.as_slice())
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut map = std::collections::HashMap::with_capacity(rows.len());
+    for r in rows {
+        let pb: String = r.get("poolBlockId");
+        let pt: String = r.get("poolTxId");
+        let t0b: String = r.get("token0BlockId");
+        let t0t: String = r.get("token0TxId");
+        let t1b: String = r.get("token1BlockId");
+        let t1t: String = r.get("token1TxId");
+        map.insert((pb, pt), ((t0b, t0t), (t1b, t1t)));
+    }
+    Ok(map)
+}
+
 

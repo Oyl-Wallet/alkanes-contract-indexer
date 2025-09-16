@@ -19,7 +19,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/db.rs`: Postgres pool initialization and re-exports DB submodules.
 - `src/db/pools.rs`: All SQL for `Pool` (read existing, batch insert, resolve IDs for pairs).
 - `src/db/pool_state.rs`: All SQL for `PoolState` (fetch latest per pool, batch insert snapshots).
-- `src/helpers/pools.rs`: Uses deezel's `AmmManager` helpers to simulate via Sandshrew and return decoded pools and details (no local decoders).
+- `src/helpers/pools.rs`: Uses deezel's `AmmManager` helpers to simulate via Sandshrew; fetches pool IDs via `get_all_pools_via_raw_simulate` and then fetches each pool's details concurrently (10 in-flight) via `get_pool_details_via_raw_simulate` (no local decoders).
 - `src/helpers/block.rs`: Block utilities: `canonical_tip_height`, `get_block_hash`, `get_block_txids`, `get_transactions_info` (batched concurrent fetch), and `tx_has_op_return`.
 - `src/helpers/protostone.rs`: Runestone/Protostone decode + trace orchestration.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
@@ -184,8 +184,8 @@ For the i-th protostone (0-based), the vout is `start + i`.
 #### Endianness
 `alkanes_trace` expects a little-endian txid hex string. The indexer reverses the bytes from the standard big-endian representation before invoking the RPC.
 - A minimal `kv_store` table is auto-created for progress tracking. The pool discovery and snapshotting flow (via deezel's `AmmManager`):
-  - calls `get_all_pools_via_raw_simulate(&url, factory_block, factory_tx)` using `SANDSHREW_RPC_URL`
-  - calls `get_all_pools_details_via_raw_simulate(&url, ...)` to fetch and decode each pool's details
+  - calls `get_all_pools_via_raw_simulate(&url, factory_block, factory_tx)` using `SANDSHREW_RPC_URL` to obtain pool IDs
+  - fetches each pool's details with bounded parallelism (10 in-flight) via `get_pool_details_via_raw_simulate(&url, pool_block, pool_tx)`; failures are skipped and logged upstream
   - batch upserts `Pool` and inserts new `PoolState` snapshots on change
 
 ### Pool discovery implementation details

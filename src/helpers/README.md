@@ -13,12 +13,15 @@ Tips:
 - Adjust batch_size based on your RPC capacity. The helper already applies backpressure via .buffer_unordered(batch_size).
 
 ## pools.rs
-- Uses deezel_common::alkanes::amm::AmmManager to fetch pool lists and per-pool details via upstream raw simulate APIs.
-- fetch_all_pools_with_details(provider, factory_block, factory_tx): Returns structured pool metadata decoded by deezel. It respects SANDSHREW_RPC_URL from the environment.
+- Uses `deezel_common::alkanes::amm::AmmManager` to discover pools and fetch per-pool details via upstream raw simulate APIs.
+- `fetch_all_pools_with_details(provider, factory_block, factory_tx)`: Two-step concurrent flow that respects `SANDSHREW_RPC_URL` from the environment.
+  1. Calls `AmmManager::get_all_pools_via_raw_simulate(&url, factory_block, factory_tx)` to obtain pool IDs.
+  2. Fetches each pool's details with bounded parallelism (10 in-flight) via `AmmManager::get_pool_details_via_raw_simulate(&url, pool_block, pool_tx)` and collects results.
 - fetch_and_upsert_pools_for_tip(provider, pool, factory_block, factory_tx, tip_height): E2E helper to fetch pools, insert any new pools, then insert PoolState snapshots only when values changed since the last snapshot.
 
 Tips:
 - Database writes are batched in a transaction for consistency. Use the same pattern if you add new upserts.
+ - Pool detail RPC fetches are performed concurrently with a fixed concurrency of 10 to balance throughput and upstream load.
 
 ## protostone.rs
 Implements the Runestone/Protostone decode + trace flow with 10-way batched parallelism for OP_RETURN transactions.

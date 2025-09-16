@@ -5,13 +5,14 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 ### Highlights
 - **Background polling**: Reliable loop that queries Metashrew and derives a canonical tip height (`metashrew_height - 1`), with exponential backoff and reorg awareness.
 - **Pools/state refresh on new tip**: When a higher tip is detected, the service first refreshes pools and inserts new `PoolState` snapshots only if values changed.
-- **Block-processing pipeline**: For each new block height the service now:
+- **Block-processing pipeline**: For each new block height the service:
   - resolves the block hash via Bitcoin RPC
   - fetches ordered txids via JSON-RPC `esplora_block::txids`
   - fetches transaction info concurrently in batches of 25 via `esplora_tx`
   - filters transactions for OP_RETURN outputs and logs the count
   - decodes Runestone/Protostone for OP_RETURN transactions and calls `alkanes_trace` per decoded protostone using 10-way batched parallelism
-- **Postgres-ready**: A connection pool is initialized; tasks will later batch-write by `blockHeight` and `txid`.
+  - persists results in Postgres in a single transaction per block: upserts `AlkaneTransaction`, replaces `DecodedProtostone` and `TraceEvent` for affected `transactionId`s
+- **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`.
 
 ### Repository Structure
 - `src/main.rs`: Program entrypoint; initializes config, DB, provider; runs background poller until Ctrl-C.
@@ -25,6 +26,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
+- `src/db/transactions.rs`: Batch upsert/replace for `AlkaneTransaction`, `TraceEvent`, and `DecodedProtostone` keyed by `transactionId`.
 - `reference/deezel/`: Vendored reference copy of deezel source for exploration only (do not import from here at build time).
 
 ### Dependencies
@@ -100,9 +102,9 @@ cargo run --bin dbctl -- drop
 
 The schema mirrors the previous Prisma-based design (types mapped to Postgres):
 - strings as `text`/`uuid`, JSON as `jsonb`, datetimes as `timestamptz`.
-- tables include: `alkane_transaction`, `trace_event`, `clock_in`, `processed_blocks`,
-  `clock_in_block_summary`, `clock_in_summary`, `corp_data`, `profile`, `pool`, `pool_state`,
-  `pool_creation`, `pool_swap`, `pool_burn`, `pool_mint`, `curated_pools`, and `kv_store`.
+- tables include: `"AlkaneTransaction"`, `"TraceEvent"`, `"DecodedProtostone"`, `"ClockIn"`, `"ProcessedBlocks"`,
+  `"ClockInBlockSummary"`, `"ClockInSummary"`, `"CorpData"`, `"Profile"`, `"Pool"`, `"PoolState"`,
+  `"PoolCreation"`, `"PoolSwap"`, `"PoolBurn"`, `"PoolMint"`, `"CuratedPools"`, and `kv_store`.
 
 ### Schema naming and compatibility
 - Table and column names preserve the original Prisma casing by using quoted identifiers (e.g., `"AlkaneTransaction"`, `"blockHeight"`).
@@ -143,13 +145,13 @@ The service will:
 Shutdown with Ctrl-C.
 
 ### Current Status
-- Poller, pipeline pools fetch, and coordinator are implemented. Per-block processing currently:
+- Poller, pipeline pools fetch, and coordinator are implemented. Per-block processing:
   - resolves block hash → fetches txids via `esplora_block::txids` → fetches tx info concurrently (25 in-flight) via `esplora_tx`
   - filters for OP_RETURN transactions and logs the count
   - decodes Runestone/Protostone for OP_RETURN transactions via `deezel_common::runestone_enhanced::format_runestone_with_decoded_messages`
   - computes shadow vouts as `start = tx.outputs.len() + 1; vout = start + protostone_index`
   - calls `alkanes_trace` with little-endian txid and the computed shadow vout
-  - timing logs per block show number of OP_RETURN transactions processed and total elapsed time; per-batch logs include size and success/error counts
+  - aggregates structured results per tx (`TxDecodeTraceResult`) and writes DB changes transactionally per block
 
 ### Technical Details
 
@@ -158,12 +160,17 @@ The decode/trace flow lives in `src/helpers/protostone.rs` and is invoked from `
 
 1. `process_block_sequential` fetches tx infos and filters for OP_RETURN transactions.
 2. It logs the OP_RETURN count and invokes `decode_and_trace_for_block(provider, &op_return_txs, 32, 16)`.
-3. `decode_and_trace_for_block` processes only OP_RETURN txs using 10-way batched parallelism:
+3. `decode_and_trace_for_block` returns a `Vec<TxDecodeTraceResult>` and processes OP_RETURN txs using 10-way batched parallelism:
    - Split OP_RETURN transactions into up to 10 batches (ceil-divided), each batch processed concurrently.
    - For each tx in a batch: fetch tx hex (Esplora first, fallback to Bitcoin Core) with timeout/backoff; deserialize to `bitcoin::Transaction`.
    - Decode runestone/protostones using `format_runestone_with_decoded_messages` from deezel.
    - Compute shadow vouts per protostone: `start = tx.output.len() + 1; vout = start + i`.
    - Reverse txid to little-endian and call `alkanes_trace` per protostone.
+4. The pipeline batches and writes:
+   - Upsert `"AlkaneTransaction"` rows (blockHeight, transactionId, transactionIndex, hasTrace, traceSucceed, transactionData)
+   - Replace `"DecodedProtostone"` rows for affected txids with `(transactionId, vout, protostoneIndex, decoded)`
+   - Replace `"TraceEvent"` rows for affected txids with `(transactionId, vout, eventType, data, alkaneAddressBlock, alkaneAddressTx)`
+   - All writes occur in a single SQL transaction and are indexable by `transactionId`.
 
 The code is instrumented with INFO logs at each step, plus per-block timing in `process_block_sequential`.
 

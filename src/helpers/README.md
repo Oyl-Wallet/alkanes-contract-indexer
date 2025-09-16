@@ -24,14 +24,19 @@ Tips:
  - Pool detail RPC fetches are performed concurrently with a fixed concurrency of 10 to balance throughput and upstream load.
 
 ## protostone.rs
-Implements the Runestone/Protostone decode + trace flow with 10-way batched parallelism for OP_RETURN transactions.
+Implements the Runestone/Protostone decode + trace flow with 10-way batched parallelism for OP_RETURN transactions and returns structured results for DB writes.
 
-- decode_and_trace_for_block(provider, txs, _, _): Processes only OP_RETURN transactions in up to 10 concurrent batches:
+- decode_and_trace_for_block(provider, txs, _, _): Returns `Vec<TxDecodeTraceResult>`; processes only OP_RETURN transactions in up to 10 concurrent batches:
   1. Fetch raw tx hex using EsploraProvider::get_tx_hex(txid); fallback to BitcoinRpcProvider::get_transaction_hex(txid) with timeout/backoff retries and INFO/WARN logs.
   2. Deserialize hex into bitcoin::Transaction.
   3. Decode runestone/protostones via deezel_common::runestone_enhanced::format_runestone_with_decoded_messages.
   4. Compute shadow vouts: start = tx.output.len() + 1; vout = start + i for i-th protostone.
-  5. Reverse txid to little-endian and call alkanes_trace per protostone.
+  5. Reverse txid to little-endian and call alkanes_trace per protostone; collect `decoded_protostones` and `trace_events`.
+
+Types:
+- `TxDecodeTraceResult { transaction_id, transaction_json, decoded_protostones, trace_events, has_trace, trace_succeed }`
+- `DecodedProtostoneItem { vout, protostone_index, decoded }`
+- `TraceEventItem { vout, event_type, data, alkane_address_block, alkane_address_tx }`
 
 Concurrency model:
 - OP_RETURN transactions are split into ceil(total/10) sized chunks; each chunk is processed concurrently. This yields significant end-to-end speedups while keeping RPC pressure bounded.
@@ -39,13 +44,12 @@ Concurrency model:
 
 Extension points:
 - Swap format_runestone_with_decoded_messages with a different decoder if protocol evolves.
-- Add structured storage of decoded results by inserting a DB repository layer between decode and trace calls.
 - If you need strict ordering, carry index metadata through TraceJob and re-order at write time.
 
 Operational considerations:
 - SANDSHREW_RPC_URL is used as the default JSON-RPC endpoint. EsploraProvider will also use a direct HTTP ESPLORA_URL if compiled with native-deps.
 - alkanes_trace expects little-endian txid hex; the helper converts the standard big-endian string before calling.
- - Logs now include per-batch summaries (size, decoded, trace_ok/trace_err, skipped, elapsed_ms) and overall totals with elapsed time.
+- Logs now include per-batch summaries (size, decoded, trace_ok/trace_err, skipped, elapsed_ms) and overall totals with elapsed time.
 
 ## Coding Guidelines
 - Error handling: Prefer early returns and clear anyhow::Context messages so upstream callers get actionable logs.

@@ -4,9 +4,12 @@ use bitcoin::Transaction;
 use deezel_common::runestone_enhanced::format_runestone_with_decoded_messages;
 use deezel_common::traits::{DeezelProvider, JsonRpcProvider, BitcoinRpcProvider, EsploraProvider};
 use serde_json::{json, Value as JsonValue};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout, Duration};
 use futures::stream::{self, StreamExt};
 use tracing::{debug, error, info, warn};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::helpers::block::tx_has_op_return;
 
@@ -114,13 +117,39 @@ fn resolve_sandshrew_url<P: JsonRpcProvider + DeezelProvider>(provider: &P) -> S
         .unwrap_or_else(|| "http://localhost:18888".to_string())
 }
 
-/// Decode runestones for OP_RETURN txs and process them in 10 concurrent batches.
+#[derive(Debug, Clone)]
+pub struct DecodedProtostoneItem {
+    pub vout: i32,
+    pub protostone_index: i32,
+    pub decoded: JsonValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraceEventItem {
+    pub vout: i32,
+    pub event_type: String,
+    pub data: JsonValue,
+    pub alkane_address_block: String,
+    pub alkane_address_tx: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TxDecodeTraceResult {
+    pub transaction_id: String,
+    pub transaction_json: JsonValue,
+    pub decoded_protostones: Vec<DecodedProtostoneItem>,
+    pub trace_events: Vec<TraceEventItem>,
+    pub has_trace: bool,
+    pub trace_succeed: bool,
+}
+
+/// Decode runestones for OP_RETURN txs, call trace RPC, and return structured results.
 pub async fn decode_and_trace_for_block<P>(
     provider: &P,
     txs: &[JsonValue],
     _max_decode_in_flight: usize,
     _max_trace_concurrency: usize,
-) -> Result<()>
+) -> Result<Vec<TxDecodeTraceResult>>
 where
     P: DeezelProvider + JsonRpcProvider + BitcoinRpcProvider + EsploraProvider + Send + Sync,
 {
@@ -130,7 +159,7 @@ where
     let op_return_txs: Vec<JsonValue> = txs.iter().filter(|t| tx_has_op_return(t)).cloned().collect();
     let total = op_return_txs.len();
     info!(op_return_txs = total, "filtered OP_RETURN transactions");
-    if total == 0 { return Ok(()); }
+    if total == 0 { return Ok(Vec::new()); }
 
     // Split into up to 10 batches and process each batch concurrently.
     let num_batches = usize::min(10, total);
@@ -140,9 +169,12 @@ where
         .map(|c| c.to_vec())
         .collect();
 
+    let results: Arc<Mutex<Vec<TxDecodeTraceResult>>> = Arc::new(Mutex::new(Vec::new()));
+
     stream::iter(batches.into_iter().enumerate())
         .for_each_concurrent(num_batches, |(batch_idx, batch)| {
             let url = url.clone();
+            let results = results.clone();
             async move {
             info!(batch = batch_idx, size = batch.len(), "batch start");
             for (local_idx, tx_json) in batch.into_iter().enumerate() {
@@ -153,24 +185,81 @@ where
                     Err(e) => { error!(batch = batch_idx, %txid_str, error = %e, "failed to materialize tx; skipping"); continue; }
                 };
                 info!(batch = batch_idx, index = local_idx, %txid_str, outputs = tx.output.len(), "tx ready; decoding runestone");
-                match format_runestone_with_decoded_messages(&tx) {
-                    Ok(formatted) => {
+                let decode_attempt = catch_unwind(AssertUnwindSafe(|| format_runestone_with_decoded_messages(&tx)));
+                match decode_attempt {
+                    Ok(Ok(formatted)) => {
                         let txid_be = formatted.get("transaction_id").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| tx.compute_txid().to_string());
                         let txid_le = to_little_endian_hex(&txid_be);
                         let start = (tx.output.len() as u32) + 1;
                         let protos = formatted.get("protostones").and_then(|v| v.as_array()).cloned().unwrap_or_default();
                         info!(batch = batch_idx, %txid_be, protostones = protos.len(), start_vout = start, "decoded runestone");
-                        for (i, _p) in protos.iter().enumerate() {
+                        let mut decoded_items: Vec<DecodedProtostoneItem> = Vec::with_capacity(protos.len());
+                        let mut trace_events: Vec<TraceEventItem> = Vec::new();
+                        let mut has_trace = false;
+                        let mut trace_succeed = false;
+
+                        for (i, p) in protos.iter().enumerate() {
                             let vout = start + i as u32;
                             info!(batch = batch_idx, %txid_be, protostone_idx = i, vout, "calling trace");
                             let job = TraceJob { txid_le_hex: txid_le.clone(), vout, protostone_idx: i };
+                            decoded_items.push(DecodedProtostoneItem { vout: vout as i32, protostone_index: i as i32, decoded: p.clone() });
                             match trace_call(provider, &url, job).await {
-                                Ok(res) => { info!(batch = batch_idx, %txid_be, protostone_idx = i, vout, "trace ok"); debug!(result = %res); }
+                                Ok(res) => {
+                                    info!(batch = batch_idx, %txid_be, protostone_idx = i, vout, "trace ok");
+                                    debug!(result = %res);
+                                    has_trace = true;
+                                    let (blk_str, tx_str, ok_status) = if let Ok(trace_parsed) = serde_json::from_value::<deezel_common::alkanes::trace::Trace>(res.clone()) {
+                                        let mut ok = false;
+                                        if let Some(first_call) = trace_parsed.calls.first() {
+                                            for ev in &first_call.events {
+                                                if let deezel_common::alkanes::trace::Event::Exit(exit) = ev {
+                                                    let s = exit.status.to_ascii_lowercase();
+                                                    if s.contains("ok") || s.contains("success") { ok = true; }
+                                                }
+                                            }
+                                        }
+                                        let (blk, txn) = if let Some(first_call) = trace_parsed.calls.first() {
+                                            if let Some(cid) = &first_call.contract_id {
+                                                let blk = cid.block.as_ref().map(|u| u.lo.to_string()).unwrap_or_default();
+                                                let txn = cid.tx.as_ref().map(|u| u.lo.to_string()).unwrap_or_default();
+                                                (blk, txn)
+                                            } else { (String::new(), String::new()) }
+                                        } else { (String::new(), String::new()) };
+                                        (blk, txn, ok)
+                                    } else { (String::new(), String::new(), false) };
+                                    if ok_status { trace_succeed = true; }
+                                    trace_events.push(TraceEventItem {
+                                        vout: vout as i32,
+                                        event_type: "trace".to_string(),
+                                        data: res,
+                                        alkane_address_block: blk_str,
+                                        alkane_address_tx: tx_str,
+                                    });
+                                }
                                 Err(e) => { error!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %e, "trace failed"); }
                             }
                         }
+                        let result = TxDecodeTraceResult {
+                            transaction_id: txid_be,
+                            transaction_json: tx_json.clone(),
+                            decoded_protostones: decoded_items,
+                            trace_events,
+                            has_trace,
+                            trace_succeed,
+                        };
+                        results.lock().await.push(result);
                     }
-                    Err(e) => { debug!(batch = batch_idx, %txid_str, error = %e, "format_runestone_with_decoded_messages failed"); }
+                    Ok(Err(e)) => { warn!(batch = batch_idx, %txid_str, error = %e, "protostone decode failed; skipping tx"); }
+                    Err(panic) => {
+                        let panic_msg: &str = if let Some(s) = panic.downcast_ref::<&str>() {
+                            s
+                        } else if let Some(s) = panic.downcast_ref::<String>() {
+                            s.as_str()
+                        } else {
+                            "panic"
+                        };
+                        error!(batch = batch_idx, %txid_str, message = %panic_msg, "protostone decode panicked; skipping tx");
+                    }
                 }
             }
             info!(batch = batch_idx, "batch complete");
@@ -180,7 +269,8 @@ where
 
     info!("decode_and_trace_for_block: complete (batched parallel)");
 
-    Ok(())
+    let out = results.lock().await.clone();
+    Ok(out)
 }
 
 

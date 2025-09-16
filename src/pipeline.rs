@@ -6,6 +6,9 @@ use tracing::info;
 use crate::helpers::pools::{fetch_and_upsert_pools_for_tip};
 use crate::helpers::block::{get_block_hash as helper_get_block_hash, get_block_txids as helper_get_block_txids, get_transactions_info as helper_get_transactions_info, tx_has_op_return};
 use crate::helpers::protostone::decode_and_trace_for_block;
+use crate::helpers::protostone::TxDecodeTraceResult;
+use crate::db::transactions::{upsert_alkane_transactions, replace_trace_events, replace_decoded_protostones};
+use serde_json::json;
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -65,7 +68,47 @@ impl Pipeline {
 			let count = op_return_txs.len();
 			let t0 = Instant::now();
 			info!(height = ctx.height, op_return_txs = count, "decode_and_trace_for_block: start");
-			decode_and_trace_for_block(provider, &op_return_txs, 32, 16).await?;
+			let results: Vec<TxDecodeTraceResult> = decode_and_trace_for_block(provider, &op_return_txs, 32, 16).await?;
+
+			// Prepare batch payloads
+			let mut tx_rows: Vec<(i32, String, i32, bool, bool, serde_json::Value)> = Vec::with_capacity(results.len());
+			let mut all_txids: Vec<String> = Vec::with_capacity(results.len());
+			let mut protostone_rows: Vec<(String, i32, i32, serde_json::Value)> = Vec::new();
+			let mut event_rows: Vec<(String, i32, String, serde_json::Value, String, String)> = Vec::new();
+
+			for (tx_index, r) in results.iter().enumerate() {
+				let txid = r.transaction_id.clone();
+				all_txids.push(txid.clone());
+				tx_rows.push((
+					ctx.height as i32,
+					txid.clone(),
+					tx_index as i32,
+					r.has_trace,
+					r.trace_succeed,
+					r.transaction_json.clone(),
+				));
+				for d in &r.decoded_protostones {
+					protostone_rows.push((txid.clone(), d.vout, d.protostone_index, d.decoded.clone()));
+				}
+				for e in &r.trace_events {
+					event_rows.push((
+						txid.clone(),
+						e.vout,
+						e.event_type.clone(),
+						e.data.clone(),
+						e.alkane_address_block.clone(),
+						e.alkane_address_tx.clone(),
+					));
+				}
+			}
+
+			// Write in a single transaction
+			let mut dbtx = self.pool.begin().await?;
+			upsert_alkane_transactions(&mut dbtx, &tx_rows).await?;
+			replace_decoded_protostones(&mut dbtx, &all_txids, &protostone_rows).await?;
+			replace_trace_events(&mut dbtx, &all_txids, &event_rows).await?;
+			dbtx.commit().await?;
+
 			let elapsed_ms = t0.elapsed().as_millis() as u64;
 			info!(height = ctx.height, op_return_txs = count, elapsed_ms, "decode_and_trace_for_block: done");
 		}

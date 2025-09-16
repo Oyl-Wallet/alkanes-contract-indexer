@@ -43,6 +43,20 @@ create table if not exists "TraceEvent" (
 create index if not exists "idx_TraceEvent_transactionId" on "TraceEvent"("transactionId");
 create index if not exists "idx_TraceEvent_eventType" on "TraceEvent"("eventType");
 
+create table if not exists "DecodedProtostone" (
+  "id" text primary key default gen_random_uuid()::text,
+  "transactionId" text not null,
+  "vout" integer not null,
+  "protostoneIndex" integer not null,
+  "decoded" jsonb not null,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now(),
+  constraint "uq_DecodedProtostone_tx_vout_index" unique ("transactionId", "vout", "protostoneIndex"),
+  constraint "fk_DecodedProtostone_transaction" foreign key ("transactionId") references "AlkaneTransaction"("transactionId")
+);
+
+create index if not exists "idx_DecodedProtostone_transactionId" on "DecodedProtostone"("transactionId");
+
 create table if not exists "ClockIn" (
   "id" uuid primary key default gen_random_uuid(),
   "transactionId" text not null,
@@ -292,6 +306,7 @@ drop table if exists "ClockInBlockSummary" cascade;
 drop table if exists "ProcessedBlocks" cascade;
 drop table if exists "ClockIn" cascade;
 drop table if exists "TraceEvent" cascade;
+drop table if exists "DecodedProtostone" cascade;
 drop table if exists "AlkaneTransaction" cascade;
 drop table if exists "CuratedPools" cascade;
 drop table if exists kv_store cascade;

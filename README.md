@@ -24,6 +24,8 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/helpers/block.rs`: Block utilities: `canonical_tip_height`, `get_block_hash`, `get_block_txids`, `get_transactions_info` (batched concurrent fetch), and `tx_has_op_return`.
 - `src/helpers/protostone.rs`: Runestone/Protostone decode + trace orchestration.
 - `src/helpers/poolswap.rs`: PoolSwap indexer that reads `TraceEvent` JSON, `DecodedProtostone` (for pointer destinations), and `Pool` metadata to derive swaps and write `PoolSwap` rows.
+- `src/helpers/poolcreate.rs`: Pool creation (initial liquidity) indexer that detects opcode `0x0` delegatecalls and writes `PoolCreation` rows.
+- `src/helpers/poolmint.rs`: Pool mint (add_liquidity) indexer that detects opcode `0x1` delegatecalls and writes `PoolMint` rows.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
@@ -139,9 +141,9 @@ The service will:
    - persists `last_processed_height` in `kv_store`
    - after catch-up, the poller continues processing subsequent new blocks as they arrive
 
-### Standalone: PoolSwap indexing for a specific block
+### Standalone: Swap/Creation/Mint indexing for a specific block
 
-You can run only the PoolSwap indexing path for a specific height:
+You can run the full pipeline for a specific height (including swaps, creations, and mints):
 
 ```bash
 cargo run --bin swaps -- --height 840000
@@ -157,6 +159,18 @@ This will:
   - Find the next `return` with the same `vout`, preferring one that returns the opposite token and whose amount matches `inputs[1]`/`inputs[2]`.
   - Compute totals for token0/token1 on invoke/return and infer sell/buy direction; persist only when both amounts > 0.
 - Persist into `PoolSwap` with a single batch write (also chunked under param limits). `sellerAddress` is resolved by reading `pointer_destination.address` from the matched protostone's decoded object for the transaction's `vout`.
+
+- Decode PoolCreation rows:
+  - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x0`.
+  - Identify token0/token1 from `invoke.context.incomingAlkanes` (excluding the poolId/LP token).
+  - Choose the matching `return` on the same `vout` where LP out > LP in, preferring minimal token outs.
+  - Compute net token0/token1 contributions and LP supply; persist rows when all nets > 0. `creatorAddress` is resolved from decoded protostone at the `vout` when available.
+
+- Decode PoolMint (add_liquidity) rows:
+  - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x1`.
+  - Use `Pool` to resolve token0/token1 for the poolId (`alkaneAddressBlock/Tx`).
+  - Choose the matching `return` on the same `vout` where the LP token (poolId) appears in `response.alkanes` with amount strictly greater than any incoming LP (net minted). On multiple candidates, prefer minimal token outs (latest on tie).
+  - Compute net amounts: token0Amount = in - out, token1Amount = in - out, lpTokenAmount = lp_out - lp_in. Persist only if all nets > 0. `minterAddress` is resolved from decoded protostone at the `vout` when available.
 
 Notes on ID/value normalization:
 - Token IDs and values in trace JSON may appear as u128 `{hi,lo}` objects, hex strings (e.g., `"0x2"`), decimal strings, or numbers.

@@ -115,6 +115,27 @@ Indexes AMM pool creation (initial liquidity) events from stored trace events an
   - `index_pool_creations_for_block` decodes candidates for a block and returns fully shaped rows.
   - `Pipeline::process_block_sequential` calls it after writing `TraceEvent`/`DecodedProtostone`, then persists via `replace_pool_creations` in a single transaction for the block.
 
+## poolmint.rs
+Indexes AMM pool mint (add_liquidity) events from stored trace events and writes structured rows into `PoolMint`.
+
+- Detection logic per candidate trace event:
+  1. Event must be `invoke` with `data.type == "delegatecall"` and opcode `inputs[0] == 0x1` (mint opcode) on the pool’s own alkane address (`alkaneAddressBlock/alkaneAddressTx`).
+  2. Events are normalized to the same order as the inspector: by `vout` ascending with `invoke` before `return` for matching.
+  3. Use `Pool` metadata to resolve the pool’s `token0` and `token1` ids.
+  4. Select the matching `return` on the same `vout` where the LP token amount in `response.alkanes` is strictly greater than any LP amount in `invoke.context.incomingAlkanes` (net LP minted). If multiple such returns exist, prefer the one with the smallest returned amounts of token0 and token1 (tie-breaker: the latest such return).
+  5. Compute net amounts (stored as strings):
+     - token0Amount = sum(invoke.incomingAlkanes[token0]) - sum(return.response.alkanes[token0])
+     - token1Amount = sum(invoke.incomingAlkanes[token1]) - sum(return.response.alkanes[token1])
+     - lpTokenAmount = sum(return.response.alkanes[poolId]) - sum(invoke.incomingAlkanes[poolId])
+  6. Persist only if all three nets are > 0.
+
+- Implementation notes:
+  - LP token id equals the pool id (`alkaneAddressBlock/alkaneAddressTx`). The chosen return is guaranteed to include the LP token with amount strictly greater than incoming LP (if any).
+  - The indexer preloads decoded protostones and, when available at the same `vout`, uses `pointer_destination.address` as `minterAddress`.
+
+- Integration points:
+  - `index_pool_mints_for_block` decodes candidates for a block and writes via `replace_pool_mints` in a single transaction for the block.
+
 ## inspect.rs (CLI)
 Standalone inspector to analyze a single `transactionId`:
 
@@ -129,6 +150,8 @@ It prints:
 - Existing `PoolSwap` rows
 - A simulated pool swap decoding run with detailed logs covering delegatecall/opcode check, pool ID extraction, incoming token presence, strict return matching, and computed swap amounts.
 - A simulated pool creation decoding run mirroring `poolcreate.rs`: it orders events by `vout` and event type, checks `delegatecall` with opcode `0x0`, identifies token0/token1 from invoke `incomingAlkanes`, selects the proper `return` (net LP minted and minimal token outs), and prints net token contributions and LP supply.
+  
+Additionally, pool mint (add_liquidity) is decoded similarly to pool creation, but keyed by opcode `0x1` and requiring the selected `return` to have LP minted (LP out > LP in). The inspector logs the chosen return and net amounts.
 
 ## Coding Guidelines
 - Error handling: Prefer early returns and clear anyhow::Context messages so upstream callers get actionable logs.

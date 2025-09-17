@@ -59,6 +59,8 @@ SANDSHREW_RPC_URL=http://localhost:18888
 
 # Network identity used by provider constructor (default: regtest)
 NETWORK=regtest
+# Optional override for notification key naming (defaults to NETWORK or 'mainnet')
+#NETWORK_ENV=regtest
 
 # Poll interval for metashrew height (ms); default 2000
 POLL_INTERVAL_MS=2000
@@ -88,6 +90,9 @@ RPC_MAX_BACKOFF_MS=5000
 RPC_TIMEOUT_MS=20000
 # Circuit breaker cooldown (ms) before half-open probe
 RPC_CIRCUIT_COOLDOWN_MS=5000
+# Redis (optional; used to publish last processed pools height)
+# Defaults to redis://127.0.0.1/
+#REDIS_URL=redis://localhost:6379/
 ```
 
 Notes:
@@ -166,6 +171,7 @@ The service will:
    - reads canonical tip height via `metashrew_height - 1`
    - detects new heights (filling gaps)
    - on first observation (no previous height): triggers `Pipeline::fetch_pools_for_tip(provider, tip)` once
+   - after a successful pools refresh, writes Redis key `indexer-${NETWORK_ENV || NETWORK || 'mainnet'}-pools-lastblock` with value `<tip>`
    - on first observation AND no `START_HEIGHT`: also processes the current tip immediately
    - on height increase: first triggers `Pipeline::fetch_pools_for_tip(provider, tip)`
    - then processes each new block via `Pipeline::process_block_sequential`

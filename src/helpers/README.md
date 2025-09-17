@@ -56,6 +56,19 @@ Operational considerations:
 - alkanes_trace expects little-endian txid hex; the helper converts the standard big-endian string before calling.
 - Logs now include per-batch summaries (size, decoded, trace_ok/trace_err, skipped, elapsed_ms) and overall totals with elapsed time.
 
+## notify.rs
+Writes a Redis key after pools are refreshed for a tip so dependent services can react.
+
+- Key name: `indexer-${NETWORK_ENV || 'mainnet'}-pools-lastblock`
+- Value: decimal block height (string)
+- Env:
+  - `REDIS_URL` (optional; default `redis://127.0.0.1/`)
+  - `NETWORK_ENV` (optional; key naming; defaults to `mainnet` when unset)
+
+Implementation details:
+- `notify_pools_processed(height: u64)`: best-effort async write using `redis` crate with multiplexed Tokio connection. Failures are logged at WARN and are non-fatal.
+- Invoked by `Pipeline::fetch_pools_for_tip` only when pool fetch/upsert succeeds.
+
 ## poolswap.rs
 Indexes AMM pool swap events from stored trace events and writes structured rows into `PoolSwap`.
 

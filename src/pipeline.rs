@@ -4,6 +4,7 @@ use deezel_common::traits::{DeezelProvider, JsonRpcProvider, BitcoinRpcProvider}
 use sqlx::PgPool;
 use tracing::info;
 use crate::helpers::pools::{fetch_and_upsert_pools_for_tip};
+use crate::helpers::notify::notify_pools_processed;
 use crate::helpers::block::{get_block_hash as helper_get_block_hash, get_block_txids as helper_get_block_txids, get_transactions_info as helper_get_transactions_info, tx_has_op_return};
 use crate::helpers::protostone::decode_and_trace_for_block;
 use crate::helpers::protostone::TxDecodeTraceResult;
@@ -37,13 +38,17 @@ impl Pipeline {
 
 	// Runs on every new tip height (even during catch-up)
 	pub async fn fetch_pools_for_tip(&self, provider: &ConcreteProvider, tip_height: u64) -> Result<()> {
-		fetch_and_upsert_pools_for_tip(
+		let res = fetch_and_upsert_pools_for_tip(
 			provider,
 			&self.pool,
 			&self.factory_block_id,
 			&self.factory_tx_id,
 			tip_height,
-		).await
+		).await;
+		if res.is_ok() {
+			notify_pools_processed(tip_height).await;
+		}
+		res
 	}
 
 	// Sequential per-block processing (historical and then following tip)

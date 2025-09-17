@@ -17,6 +17,7 @@ use crate::helpers::block::tx_has_op_return;
 struct TraceJob {
     txid_le_hex: String,
     vout: u32,
+    #[allow(dead_code)]
     protostone_idx: usize,
 }
 

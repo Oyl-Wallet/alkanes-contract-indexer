@@ -92,6 +92,29 @@ Indexes AMM pool swap events from stored trace events and writes structured rows
   - For each swap, it matches on the `invoke` event's `vout` and reads `pointer_destination.address` from the decoded protostone JSON.
   - The resulting address is stored as `sellerAddress` on the `PoolSwap` row.
 
+## poolcreate.rs
+Indexes AMM pool creation (initial liquidity) events from stored trace events and writes structured rows into `PoolCreation`.
+
+- Detection logic per candidate trace event:
+  1. Event must be `invoke` with `data.type == "delegatecall"` and opcode `inputs[0] == 0x0` (create opcode) on the pool’s own alkane address (`alkaneAddressBlock/alkaneAddressTx`).
+  2. Events are normalized to the same order as the inspector: by `vout` ascending with `invoke` before `return` for matching.
+  3. Determine the two non-LP token IDs from `context.incomingAlkanes` on the invoke. If fewer than two unique non-LP ids are present, skip.
+  4. Select the matching `return` on the same `vout` where the LP token amount in `response.alkanes` is strictly greater than any LP amount in `incomingAlkanes` (net LP minted). If multiple such returns exist, prefer the one with the smallest amounts returned of token0 and token1 (tie-breaker: the latest such return).
+  5. Compute net amounts (all values are u128, stored as strings):
+     - token0_amount = sum(invoke.incomingAlkanes[token0]) - sum(return.response.alkanes[token0])
+     - token1_amount = sum(invoke.incomingAlkanes[token1]) - sum(return.response.alkanes[token1])
+     - token_supply  = sum(return.response.alkanes[lpId]) - sum(invoke.incomingAlkanes[lpId])
+  6. Persist only if all three nets are > 0.
+
+- Implementation notes:
+  - LP token id equals the pool id (`alkaneAddressBlock/alkaneAddressTx`).
+  - The indexer preloads decoded protostones and, when available at the same `vout`, uses `pointer_destination.address` as `creatorAddress`.
+  - Event-order normalization eliminates mismatches between the inspector and the indexer.
+
+- Integration points:
+  - `index_pool_creations_for_block` decodes candidates for a block and returns fully shaped rows.
+  - `Pipeline::process_block_sequential` calls it after writing `TraceEvent`/`DecodedProtostone`, then persists via `replace_pool_creations` in a single transaction for the block.
+
 ## inspect.rs (CLI)
 Standalone inspector to analyze a single `transactionId`:
 
@@ -105,6 +128,7 @@ It prints:
 - Stored `DecodedProtostone` and `TraceEvent` rows (`--verbose-json` prints pretty JSON)
 - Existing `PoolSwap` rows
 - A simulated pool swap decoding run with detailed logs covering delegatecall/opcode check, pool ID extraction, incoming token presence, strict return matching, and computed swap amounts.
+- A simulated pool creation decoding run mirroring `poolcreate.rs`: it orders events by `vout` and event type, checks `delegatecall` with opcode `0x0`, identifies token0/token1 from invoke `incomingAlkanes`, selects the proper `return` (net LP minted and minimal token outs), and prints net token contributions and LP supply.
 
 ## Coding Guidelines
 - Error handling: Prefer early returns and clear anyhow::Context messages so upstream callers get actionable logs.

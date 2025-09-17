@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use sqlx::Row;
 
 /// Batch upsert records into "AlkaneTransaction" by unique "transactionId".
 /// On conflict, updates mutable fields and refreshes "updatedAt".
@@ -127,19 +128,19 @@ pub async fn get_decoded_protostones_by_txid_vout(
     let mut out: HashMap<String, HashMap<i32, Vec<(i32, JsonValue)>>> = HashMap::new();
     if txids.is_empty() { return Ok(out); }
 
-    // Query all rows for provided txids
-    let rows = sqlx::query!(
-        r#"select "transactionId" as txid, "vout", "protostoneIndex" as idx, "decoded" from "DecodedProtostone" where "transactionId" = any($1) order by "transactionId", "vout", "protostoneIndex""#,
-        txids
+    // Query all rows for provided txids (runtime-checked to avoid compile-time DB dependency)
+    let rows = sqlx::query(
+        r#"select "transactionId" as txid, "vout", "protostoneIndex" as idx, "decoded" from "DecodedProtostone" where "transactionId" = any($1) order by "transactionId", "vout", "protostoneIndex""#
     )
+    .bind(txids)
     .fetch_all(pool)
     .await?;
 
     for r in rows {
-        let txid = r.txid;
-        let vout = r.vout;
-        let idx = r.idx;
-        let decoded: JsonValue = r.decoded;
+        let txid: String = r.try_get("txid")?;
+        let vout: i32 = r.try_get("vout")?;
+        let idx: i32 = r.try_get("idx")?;
+        let decoded: JsonValue = r.try_get("decoded")?;
         out.entry(txid)
             .or_default()
             .entry(vout)

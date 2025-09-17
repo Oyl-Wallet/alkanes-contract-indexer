@@ -124,6 +124,44 @@ cargo build
 cargo build --release
 ```
 
+### Important: SQLx compile-time checks (fresh machine builds)
+SQLx validates `sqlx::query!` macros at compile time by connecting to your `DATABASE_URL` and checking the queried tables/columns. On a fresh database without the schema, builds can fail with errors like:
+
+```
+error: error returned from database: relation "DecodedProtostone" does not exist
+```
+
+To fix this, choose one workflow:
+
+- Initialize the database before building (recommended)
+  1. Ensure `DATABASE_URL` is set (see Environment Variables below).
+  2. Push the schema:
+     ```bash
+     cargo run --bin dbctl -- push
+     ```
+  3. Build:
+     ```bash
+     cargo build --release
+     ```
+
+- Use SQLx offline mode (no DB needed at build time)
+  1. On a machine with a live DB and schema, generate prepare data and commit it:
+     ```bash
+     cargo install sqlx-cli
+     export DATABASE_URL=postgres://user:pass@host/db
+     cargo run --bin dbctl -- push
+     cargo sqlx prepare -- --all-targets
+     # commit the generated sqlx-data.json
+     ```
+  2. On fresh machines, build offline:
+     ```bash
+     SQLX_OFFLINE=true cargo build --release
+     ```
+
+Notes:
+- If your Rust toolchain is too old for `edition = "2024"`, the compiler will error before SQLx runs; use a recent stable toolchain.
+- You can replace specific `sqlx::query!` usages with `sqlx::query` to avoid compile-time checking, but you lose compile-time row-shape validation.
+
 ### Database Schema Management (CLI)
 We provide a small CLI to manage the database schema.
 

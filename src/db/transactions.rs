@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 
 /// Batch upsert records into "AlkaneTransaction" by unique "transactionId".
 /// On conflict, updates mutable fields and refreshes "updatedAt".
@@ -115,6 +116,37 @@ pub async fn replace_decoded_protostones(
         qb.execute(&mut **tx).await?;
     }
     Ok(())
+}
+
+/// Fetch decoded protostones for given txids, keyed by (transactionId, vout).
+/// Returns a map: txid -> (vout -> Vec<(protostoneIndex, decoded_json)>)
+pub async fn get_decoded_protostones_by_txid_vout(
+    pool: &sqlx::PgPool,
+    txids: &[String],
+ ) -> Result<HashMap<String, HashMap<i32, Vec<(i32, JsonValue)>>>> {
+    let mut out: HashMap<String, HashMap<i32, Vec<(i32, JsonValue)>>> = HashMap::new();
+    if txids.is_empty() { return Ok(out); }
+
+    // Query all rows for provided txids
+    let rows = sqlx::query!(
+        r#"select "transactionId" as txid, "vout", "protostoneIndex" as idx, "decoded" from "DecodedProtostone" where "transactionId" = any($1) order by "transactionId", "vout", "protostoneIndex""#,
+        txids
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for r in rows {
+        let txid = r.txid;
+        let vout = r.vout;
+        let idx = r.idx;
+        let decoded: JsonValue = r.decoded;
+        out.entry(txid)
+            .or_default()
+            .entry(vout)
+            .or_default()
+            .push((idx, decoded));
+    }
+    Ok(out)
 }
 
 /// Replace PoolSwap rows for a set of txids, then bulk insert provided swaps.

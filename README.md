@@ -23,11 +23,11 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/helpers/pools.rs`: Uses deezel's `AmmManager` helpers to simulate via Sandshrew; fetches pool IDs via `get_all_pools_via_raw_simulate` and then fetches each pool's details concurrently (10 in-flight) via `get_pool_details_via_raw_simulate` (no local decoders).
 - `src/helpers/block.rs`: Block utilities: `canonical_tip_height`, `get_block_hash`, `get_block_txids`, `get_transactions_info` (batched concurrent fetch), and `tx_has_op_return`.
 - `src/helpers/protostone.rs`: Runestone/Protostone decode + trace orchestration.
-- `src/helpers/poolswap.rs`: PoolSwap indexer that reads `TraceEvent` JSON and `Pool` metadata to derive swaps and write `PoolSwap` rows.
+- `src/helpers/poolswap.rs`: PoolSwap indexer that reads `TraceEvent` JSON, `DecodedProtostone` (for pointer destinations), and `Pool` metadata to derive swaps and write `PoolSwap` rows.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
-- `src/db/transactions.rs`: Batch upsert/replace for `AlkaneTransaction`, `TraceEvent`, and `DecodedProtostone` keyed by `transactionId`.
+- `src/db/transactions.rs`: Batch upsert/replace for `AlkaneTransaction`, `TraceEvent`, and `DecodedProtostone` keyed by `transactionId`, plus helper to read decoded protostones by `(transactionId, vout)`.
 - `reference/deezel/`: Vendored reference copy of deezel source for exploration only (do not import from here at build time).
 
 ### Dependencies
@@ -156,14 +156,14 @@ This will:
   - Extract desired output amounts from `inputs[1]` and/or `inputs[2]` (hex) when present.
   - Find the next `return` with the same `vout`, preferring one that returns the opposite token and whose amount matches `inputs[1]`/`inputs[2]`.
   - Compute totals for token0/token1 on invoke/return and infer sell/buy direction; persist only when both amounts > 0.
-- Persist into `PoolSwap` with a single batch write (also chunked under param limits).
+- Persist into `PoolSwap` with a single batch write (also chunked under param limits). `sellerAddress` is resolved by reading `pointer_destination.address` from the matched protostone's decoded object for the transaction's `vout`.
 
 Notes on ID/value normalization:
 - Token IDs and values in trace JSON may appear as u128 `{hi,lo}` objects, hex strings (e.g., `"0x2"`), decimal strings, or numbers.
 - The decoder normalizes all of these to u128 before comparison or summation.
 
 Notes:
-- `sellerAddress` is currently left NULL.
+- `sellerAddress` is derived from `DecodedProtostone.pointer_destination.address` by matching the `vout` of the swap's `invoke` event.
 - Requires `Pool` table to be populated with the pools referenced by trace events.
 
 ### Metashrew height off-by-one

@@ -87,8 +87,10 @@ Indexes AMM pool swap events from stored trace events and writes structured rows
   - Called from `Pipeline::process_block_sequential` after protostones and trace events are written.
   - Also exposed via a standalone CLI (`swaps`) to process a specific block.
 
-- Limitations/TODO:
-  - `sellerAddress` is currently not resolved. This requires historical alkane ownership lookup on inputs; the plumbing is left for a future enhancement.
+- sellerAddress resolution:
+  - The indexer preloads decoded protostones for all txids in the block via a DB helper.
+  - For each swap, it matches on the `invoke` event's `vout` and reads `pointer_destination.address` from the decoded protostone JSON.
+  - The resulting address is stored as `sellerAddress` on the `PoolSwap` row.
 
 ## inspect.rs (CLI)
 Standalone inspector to analyze a single `transactionId`:

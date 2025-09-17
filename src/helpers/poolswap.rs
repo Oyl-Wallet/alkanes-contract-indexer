@@ -4,7 +4,7 @@ use serde_json::Value as JsonValue;
 use sqlx::PgPool;
 use tracing::info;
 
-use crate::db::transactions::replace_pool_swaps;
+use crate::db::transactions::{replace_pool_swaps, get_decoded_protostones_by_txid_vout};
 use crate::db::pools::get_pool_tokens_for_pairs;
 use std::collections::HashSet;
 
@@ -137,6 +137,9 @@ pub async fn index_pool_swaps_for_block(
     results: &[(String, i32, DateTime<Utc>, JsonValue, Vec<JsonValue>)]
     // (transactionId, transactionIndex, timestamp, tx_json, trace_events_json)
 ) -> Result<()> {
+    // Preload decoded protostones for all txids in this block once
+    let txids: Vec<String> = results.iter().map(|r| r.0.clone()).collect();
+    let decoded_by_tx_vout = get_decoded_protostones_by_txid_vout(db, &txids).await?;
     // Collect unique pool (block, tx) pairs across all delegatecall invoke events
     let mut unique_pools: HashSet<(String, String)> = HashSet::new();
     for (_txid, _tx_idx, _timestamp, _tx_json, events) in results.iter() {
@@ -216,8 +219,23 @@ pub async fn index_pool_swaps_for_block(
 
             if sold_amount_u128 == 0 || bought_amount_u128 == 0 { continue; }
 
-            // Optionally determine seller address from inputs and previous alkanes state; not implemented here due to dependency on external service
-            let seller_address: Option<String> = None;
+            // Determine sellerAddress from DecodedProtostone.pointer_destination.address for this txid+vout
+            let seller_address: Option<String> = decoded_by_tx_vout
+                .get(txid)
+                .and_then(|by_vout| by_vout.get(&(invoke_vout as i32)))
+                .and_then(|items| {
+                    // Search any decoded object at this vout for pointer_destination.address
+                    for (_idx, d) in items {
+                        if let Some(addr) = d
+                            .get("pointer_destination")
+                            .and_then(|pd| pd.get("address"))
+                            .and_then(|v| v.as_str())
+                        {
+                            return Some(addr.to_string());
+                        }
+                    }
+                    None
+                });
 
             swap_rows.push((
                 txid.clone(),

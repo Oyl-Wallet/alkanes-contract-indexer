@@ -90,6 +90,11 @@ cargo update -p deezel-common
 cargo build
 ```
 
+### Build (Release)
+```bash
+cargo build --release
+```
+
 ### Database Schema Management (CLI)
 We provide a small CLI to manage the database schema.
 
@@ -122,6 +127,12 @@ RUST_LOG=info cargo run
 
 # With more verbose logs
 RUST_LOG=debug cargo run
+```
+
+Run the compiled release binary with INFO logs:
+
+```bash
+RUST_LOG=info ./target/release/alkanes-contract-indexer
 ```
 
 The service will:

@@ -12,6 +12,7 @@ mod pipeline;
 mod poller;
 mod provider;
 mod helpers;
+use crate::db::blocks::ensure_processed_blocks_table;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,6 +30,9 @@ async fn main() -> Result<()> {
     // DB pool
     let pool = db::connect(&cfg.database_url, 10).await?;
     info!("Connected to Postgres");
+
+    // Ensure ProcessedBlocks exists (defensive)
+    ensure_processed_blocks_table(&pool).await?;
 
     // Provider
     let provider = provider::build_provider(

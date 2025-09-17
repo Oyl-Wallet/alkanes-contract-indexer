@@ -13,11 +13,13 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
   - decodes Runestone/Protostone for OP_RETURN transactions and calls `alkanes_trace` per decoded protostone using 10-way batched parallelism
   - persists results in Postgres in a single transaction per block: upserts `AlkaneTransaction`, replaces `DecodedProtostone` and flattened per-event `TraceEvent` rows for affected `transactionId`s
 - **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`. Large batches are automatically chunked to stay within SQL bind parameter limits.
+ - **Processed blocks tracking**: After each `process_block_sequential` completes, the service upserts into `ProcessedBlocks` with `(blockHeight, blockHash, timestamp, isProcessing=false)`. The timestamp comes from the first transaction's `status.block_time` in the block if available, otherwise `Utc::now()`.
 
 ### Repository Structure
 - `src/main.rs`: Program entrypoint; initializes config, DB, provider; runs background poller until Ctrl-C.
 - `src/config.rs`: Loads configuration from environment variables.
 - `src/db.rs`: Postgres pool initialization and re-exports DB submodules.
+- `src/db/blocks.rs`: Helpers for `ProcessedBlocks` (table ensure and upsert after successful block processing).
 - `src/db/pools.rs`: All SQL for `Pool` (read existing, batch insert, resolve IDs for pairs).
 - `src/db/pool_state.rs`: All SQL for `PoolState` (fetch latest per pool, batch insert snapshots).
 - `src/helpers/pools.rs`: Uses deezel's `AmmManager` helpers to simulate via Sandshrew; fetches pool IDs via `get_all_pools_via_raw_simulate` and then fetches each pool's details concurrently (10 in-flight) via `get_pool_details_via_raw_simulate` (no local decoders).
@@ -167,6 +169,7 @@ The service will:
    - on first observation AND no `START_HEIGHT`: also processes the current tip immediately
    - on height increase: first triggers `Pipeline::fetch_pools_for_tip(provider, tip)`
    - then processes each new block via `Pipeline::process_block_sequential`
+   - after a block finishes indexing, record a row in `ProcessedBlocks` with the block's hash and timestamp
    - on no height change: skips pools/state refresh and block processing
 4) If `START_HEIGHT` is set, start the catch-up coordinator which:
    - waits for the poller to initialize tip (and perform the initial pools/state refresh) before starting
@@ -287,6 +290,9 @@ For the i-th protostone (0-based), the vout is `start + i`.
 - Ensure `SANDSHREW_RPC_URL` points to a running endpoint that supports `metashrew_height`.
 - Increase `POLL_INTERVAL_MS` if your environment is resource-constrained.
 - Enable debug logs to inspect simulate responses:
+- If you see `cannot insert multiple commands into a prepared statement` at startup:
+  - This indicates a multi-statement SQL was sent as a single prepared statement. The code has been updated to split the DDL into separate queries in `db::blocks::ensure_processed_blocks_table`.
+
   - `RUST_LOG=alkanes_contract_indexer=debug,deezel_common=debug cargo run`
 - If you see `Other error: Failed to decode get_all_pools result`:
   - Confirm `SANDSHREW_RPC_URL` is correct (no localhost fallback).

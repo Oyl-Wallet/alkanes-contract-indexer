@@ -14,7 +14,9 @@ use crate::helpers::poolmint::index_pool_mints_for_block;
 use crate::helpers::poolburn::index_pool_burns_for_block;
 use crate::db::transactions::replace_pool_creations;
 use chrono::{TimeZone, Utc};
+use chrono::DateTime;
 use std::time::Instant;
+use crate::db::blocks::upsert_processed_block;
 
 #[derive(Clone, Debug)]
 pub struct BlockContext {
@@ -157,6 +159,19 @@ impl Pipeline {
             // Index pool burns
             index_pool_burns_for_block(&self.pool, ctx.height as i32, &burn_inputs).await?;
 		}
+
+		// Determine block timestamp: use first tx's block_time if present, else now()
+		let block_ts: DateTime<Utc> = txs.iter()
+			.filter_map(|tx| tx.get("status").and_then(|s| s.get("block_time")).and_then(|v| v.as_i64()))
+			.next()
+			.and_then(|secs| Utc.timestamp_opt(secs, 0).single())
+			.unwrap_or_else(|| Utc::now());
+
+
+		// Record processed block marker
+		upsert_processed_block(&self.pool, ctx.height as i32, &block_hash, block_ts).await?;
+		info!(height = ctx.height, %block_hash, "recorded ProcessedBlocks entry");
+
 		Ok(())
 	}
 }

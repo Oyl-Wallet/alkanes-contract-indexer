@@ -9,6 +9,9 @@ This directory groups helper modules used by the indexer pipeline. These modules
 - get_transactions_info(provider, txids, batch_size): Concurrent fan-out using Futures streams to fetch esplora_tx for each txid, each request using the resilient JSON-RPC wrapper. Returns a Vec<serde_json::Value> (preserving inputs order after collection is not guaranteed; callers that require order should re-map).
 - tx_has_op_return(tx_json): Utility to detect OP_RETURN outputs based on scriptpubkey_type, scriptpubkey_asm, or hex prefix 6a.
 
+Timestamp source for `ProcessedBlocks`:
+- The pipeline derives the block timestamp from the first transaction in the block that has `status.block_time` when present; otherwise it falls back to `Utc::now()`. This timestamp is used when upserting the `ProcessedBlocks` row after successful processing.
+
 Tips:
 - Adjust batch_size based on your RPC capacity. The helper already applies backpressure via .buffer_unordered(batch_size).
 

@@ -26,6 +26,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/helpers/poolswap.rs`: PoolSwap indexer that reads `TraceEvent` JSON, `DecodedProtostone` (for pointer destinations), and `Pool` metadata to derive swaps and write `PoolSwap` rows.
 - `src/helpers/poolcreate.rs`: Pool creation (initial liquidity) indexer that detects opcode `0x0` delegatecalls and writes `PoolCreation` rows.
 - `src/helpers/poolmint.rs`: Pool mint (add_liquidity) indexer that detects opcode `0x1` delegatecalls and writes `PoolMint` rows.
+- `src/helpers/poolburn.rs`: Pool burn (remove_liquidity) indexer that detects opcode `0x2` delegatecalls and writes `PoolBurn` rows.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
@@ -141,9 +142,9 @@ The service will:
    - persists `last_processed_height` in `kv_store`
    - after catch-up, the poller continues processing subsequent new blocks as they arrive
 
-### Standalone: Swap/Creation/Mint indexing for a specific block
+### Standalone: Swap/Creation/Mint/Burn indexing for a specific block
 
-You can run the full pipeline for a specific height (including swaps, creations, and mints):
+You can run the full pipeline for a specific height (including swaps, creations, mints, and burns):
 
 ```bash
 cargo run --bin swaps -- --height 840000
@@ -167,6 +168,12 @@ This will:
   - Compute net token0/token1 contributions and LP supply; persist rows when all nets > 0. `creatorAddress` is resolved from decoded protostone at the `vout` when available.
 
 - Decode PoolMint (add_liquidity) rows:
+ - Decode PoolBurn (remove_liquidity) rows:
+  - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x2`.
+  - Use `Pool` to resolve token0/token1 for the poolId (`alkaneAddressBlock/Tx`).
+  - Choose the matching `return` on the same `vout` where the user receives more token0 and token1 (net positive out) and where the LP token amount in `response.alkanes` is strictly less than any LP in `invoke.context.incomingAlkanes` (net burned). If multiple such returns exist, prefer the one with the smallest LP remaining (tie-breaker: the latest such return).
+  - Compute net amounts: token0Amount = out - in, token1Amount = out - in, lpTokenAmount = lp_in - lp_out. Persist only if all nets > 0. `burnerAddress` is resolved from decoded protostone at the `vout` when available.
+
   - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x1`.
   - Use `Pool` to resolve token0/token1 for the poolId (`alkaneAddressBlock/Tx`).
   - Choose the matching `return` on the same `vout` where the LP token (poolId) appears in `response.alkanes` with amount strictly greater than any incoming LP (net minted). On multiple candidates, prefer minimal token outs (latest on tie).

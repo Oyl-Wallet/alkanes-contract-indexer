@@ -136,6 +136,27 @@ Indexes AMM pool mint (add_liquidity) events from stored trace events and writes
 - Integration points:
   - `index_pool_mints_for_block` decodes candidates for a block and writes via `replace_pool_mints` in a single transaction for the block.
 
+## poolburn.rs
+Indexes AMM pool burn (remove_liquidity) events from stored trace events and writes structured rows into `PoolBurn`.
+
+- Detection logic per candidate trace event:
+  1. Event must be `invoke` with `data.type == "delegatecall"` and opcode `inputs[0] == 0x2` (burn opcode) on the pool’s own alkane address (`alkaneAddressBlock/alkaneAddressTx`).
+  2. Events are normalized to the same order as the inspector: by `vout` ascending with `invoke` before `return` for matching.
+  3. Use `Pool` metadata to resolve the pool’s `token0` and `token1` ids.
+  4. Select the matching `return` on the same `vout` where token0 and token1 are net positive out to the caller and, if there is any incoming LP on the invoke, the LP token amount in `response.alkanes` is strictly less than the incoming LP (net LP burned). If multiple such returns exist, prefer the one with the smallest LP remaining (tie-breaker: the latest such return).
+  5. Compute net amounts (stored as strings):
+     - token0Amount = sum(return.response.alkanes[token0]) - sum(invoke.incomingAlkanes[token0])
+     - token1Amount = sum(return.response.alkanes[token1]) - sum(invoke.incomingAlkanes[token1])
+     - lpTokenAmount = sum(invoke.incomingAlkanes[poolId]) - sum(return.response.alkanes[poolId])
+  6. Persist only if all three nets are > 0.
+
+- Implementation notes:
+  - LP token id equals the pool id (`alkaneAddressBlock/alkaneAddressTx`).
+  - The indexer preloads decoded protostones and, when available at the same `vout`, uses `pointer_destination.address` as `burnerAddress`.
+
+- Integration points:
+  - `index_pool_burns_for_block` decodes candidates for a block and writes via `replace_pool_burns` in a single transaction for the block.
+
 ## inspect.rs (CLI)
 Standalone inspector to analyze a single `transactionId`:
 

@@ -60,8 +60,11 @@ impl BlockPoller {
                                 info!(height = h, "new block detected");
                                 if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height: h }).await {
                                     error!(height = h, error = %e, "block processing failed");
+                                    // Stop advancing so we can retry this specific height on next loop
+                                    break;
+                                } else {
+                                    last_height = Some(h);
                                 }
-                                last_height = Some(h);
                             }
                         }
                         Some(prev) if height < prev => {

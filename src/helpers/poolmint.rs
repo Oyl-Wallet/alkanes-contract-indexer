@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::PgPool;
-use tracing::{info, debug};
+use tracing::info;
 
 use crate::db::pools::get_pool_tokens_for_pairs;
 use crate::db::transactions::{replace_pool_mints, get_decoded_protostones_by_txid_vout};

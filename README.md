@@ -73,12 +73,34 @@ POLL_INTERVAL_MS=2000
 # These must be the numeric string IDs (lo parts) expected by Metashrew
 FACTORY_BLOCK_ID=0
 FACTORY_TX_ID=0
+
+# RPC resiliency (defaults shown)
+# Global in-process concurrency cap for outbound RPCs
+RPC_MAX_CONCURRENCY=64
+# Max retry attempts per RPC
+RPC_MAX_RETRIES=5
+# Exponential backoff base and cap (ms)
+RPC_BASE_BACKOFF_MS=200
+RPC_MAX_BACKOFF_MS=5000
+# Per-call timeout (ms)
+RPC_TIMEOUT_MS=20000
+# Circuit breaker cooldown (ms) before half-open probe
+RPC_CIRCUIT_COOLDOWN_MS=5000
 ```
 
 Notes:
 - The service builds a deezel `ConcreteProvider`. Pool discovery calls pass `SANDSHREW_RPC_URL` directly to deezel's `AmmManager` helpers.
 - Block tx discovery uses JSON-RPC methods (`esplora_block::txids`, `esplora_tx`) through the provider, preferring `SANDSHREW_RPC_URL` from the environment.
 - `BITCOIN_RPC_URL` and `ESPLORA_URL` are optional; leave unset for Sandshrew-only routing.
+
+### Resiliency and backpressure
+- All JSON-RPC calls from the indexer use a resilient wrapper (`helpers/rpc.rs`) that applies:
+  - per-call timeout, retries with exponential backoff + jitter, and a global concurrency limiter
+  - a simple circuit breaker that opens on repeated failures and half-opens after `RPC_CIRCUIT_COOLDOWN_MS`
+- Functions updated to use this wrapper include:
+  - `helpers/block.rs::canonical_tip_height` (Metashrew height), `get_block_txids`, `get_transactions_info`
+  - `helpers/protostone.rs::trace_call` (alkanes_trace)
+- The poller only advances its `last_height` after a successful `process_block_sequential`; on failure it pauses advancing so the same height is retried on the next tick. Tip-height fetch already uses exponential backoff.
 
 ## Update deezel-common to latest
 ```bash

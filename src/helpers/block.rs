@@ -3,6 +3,7 @@ use deezel_common::traits::{BitcoinRpcProvider, JsonRpcProvider, DeezelProvider,
 use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::env;
+use crate::helpers::rpc::{resilient_call, resilient_provider_call};
 
 // Resolve block hash by height via Bitcoin RPC provider
 pub async fn get_block_hash<P>(provider: &P, height: u64) -> Result<String>
@@ -22,7 +23,7 @@ where
 		.ok()
 		.or_else(|| provider.get_bitcoin_rpc_url())
 		.unwrap_or_else(|| "http://localhost:18888".to_string());
-	let txids_val = provider.call(&url, "esplora_block::txids", json!([block_hash]), 1).await?;
+    let txids_val = resilient_call(provider, &url, "esplora_block::txids", json!([block_hash]), 1).await?;
 	let txids: Vec<String> = txids_val
 		.as_array()
 		.map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
@@ -40,12 +41,12 @@ where
 		.ok()
 		.or_else(|| provider.get_bitcoin_rpc_url())
 		.unwrap_or_else(|| "http://localhost:18888".to_string());
-	let results: Vec<Option<JsonValue>> = stream::iter(txids.iter().cloned().enumerate())
+    let results: Vec<Option<JsonValue>> = stream::iter(txids.iter().cloned().enumerate())
 		.map(|(_idx, txid)| {
 			let url_inner = url.clone();
 			let provider_ref = provider;
 			async move {
-				match provider_ref.call(&url_inner, "esplora_tx", json!([txid]), 1).await {
+                match resilient_call(provider_ref, &url_inner, "esplora_tx", json!([txid]), 1).await {
 					Ok(v) => Some(v),
 					Err(_e) => None,
 				}
@@ -78,7 +79,7 @@ pub fn tx_has_op_return(tx_json: &JsonValue) -> bool {
 // Returns the canonical chain tip height by subtracting 1 from Metashrew's reported height,
 // which is known to be off-by-one (reports next height).
 pub async fn canonical_tip_height<P: MetashrewRpcProvider>(provider: &P) -> Result<u64> {
-	let h = provider.get_metashrew_height().await?;
+    let h = resilient_provider_call("get_metashrew_height", || provider.get_metashrew_height()).await?;
 	if h == 0 {
 		return Err(anyhow::anyhow!("unexpected metashrew height 0"));
 	}

@@ -3,10 +3,10 @@
 This directory groups helper modules used by the indexer pipeline. These modules isolate RPC access, decoding logic, and domain-specific processing so they can be extended or optimized independently.
 
 ## block.rs
-- canonical_tip_height(provider): Returns metashrew_height - 1 to correct Metashrew's off-by-one. Use this everywhere you need the chain tip.
+- canonical_tip_height(provider): Returns metashrew_height - 1 to correct Metashrew's off-by-one. It uses the resilient provider wrapper (timeout, retry/backoff, circuit breaker, global semaphore) to tolerate transient RPC failures.
 - get_block_hash(provider, height): Thin wrapper over Bitcoin RPC to get the block hash by height.
-- get_block_txids(provider, block_hash): Calls JSON-RPC esplora_block::txids on the configured Sandshrew/Metashrew endpoint (from SANDSHREW_RPC_URL or provider default).
-- get_transactions_info(provider, txids, batch_size): Concurrent fan-out using Futures streams to fetch esplora_tx for each txid. Returns a Vec<serde_json::Value> (preserving inputs order after collection is not guaranteed; callers that require order should re-map).
+- get_block_txids(provider, block_hash): Calls JSON-RPC esplora_block::txids on the configured Sandshrew/Metashrew endpoint (from SANDSHREW_RPC_URL or provider default) via the resilient JSON-RPC wrapper.
+- get_transactions_info(provider, txids, batch_size): Concurrent fan-out using Futures streams to fetch esplora_tx for each txid, each request using the resilient JSON-RPC wrapper. Returns a Vec<serde_json::Value> (preserving inputs order after collection is not guaranteed; callers that require order should re-map).
 - tx_has_op_return(tx_json): Utility to detect OP_RETURN outputs based on scriptpubkey_type, scriptpubkey_asm, or hex prefix 6a.
 
 Tips:
@@ -31,7 +31,7 @@ Implements the Runestone/Protostone decode + trace flow with 10-way batched para
   2. Deserialize hex into bitcoin::Transaction.
   3. Decode runestone/protostones via deezel_common::runestone_enhanced::format_runestone_with_decoded_messages.
   4. Compute shadow vouts: start = tx.output.len() + 1; vout = start + i for i-th protostone.
-  5. Reverse txid to little-endian and call alkanes_trace per protostone; collect `decoded_protostones` and `trace_events`.
+  5. Reverse txid to little-endian and call alkanes_trace per protostone using the resilient JSON-RPC wrapper; collect `decoded_protostones` and `trace_events`.
      - The trace result is flattened into per-event rows: each `invoke`/`return` is recorded separately with the same shadow `vout` so downstream consumers can match them.
 
 Types:
@@ -177,4 +177,4 @@ Additionally, pool mint (add_liquidity) is decoded similarly to pool creation, b
 ## Coding Guidelines
 - Error handling: Prefer early returns and clear anyhow::Context messages so upstream callers get actionable logs.
 - Logging: Use INFO for high-signal steps (fetch, decode, trace) and DEBUG for verbose payloads. Avoid spamming at INFO in hot loops unless debugging.
-- Concurrency: When re-enabling, bound concurrency and use bounded channels to apply backpressure to upstream services.
+- Concurrency & resiliency: Use the shared resilient wrappers in `helpers/rpc.rs` for outbound RPCs. Bound concurrency and use the global semaphore to apply backpressure to upstream services. Tune via `RPC_MAX_CONCURRENCY`, `RPC_MAX_RETRIES`, `RPC_*BACKOFF*`, `RPC_TIMEOUT_MS`, and `RPC_CIRCUIT_COOLDOWN_MS`.

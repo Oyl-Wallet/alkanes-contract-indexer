@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout, Duration};
 use futures::stream::{self, StreamExt};
 use tracing::{debug, error, info, warn};
+use crate::helpers::rpc::resilient_call;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::helpers::block::tx_has_op_return;
@@ -37,8 +38,7 @@ async fn trace_call<P: DeezelProvider + JsonRpcProvider + Send + Sync>(
     job: TraceJob,
 ) -> Result<JsonValue> {
     let req = json!([{ "txid": job.txid_le_hex, "vout": job.vout }]);
-    let res = provider
-        .call(url, "alkanes_trace", req, 1)
+    let res = resilient_call(provider, url, "alkanes_trace", req, 1)
         .await
         .context("alkanes_trace call failed")?;
     Ok(res)

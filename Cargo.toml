@@ -21,6 +21,8 @@ futures = "0.3"
 hex = "0.4"
 bitcoin = "0.32"
 chrono = { version = "0.4", features = ["serde", "clock"] }
+once_cell = "1.19"
+fastrand = "2.1"
 
 # Deezel libraries (use git until crates are published)
 deezel-common = { git = "https://github.com/Sprimage/deezel", package = "deezel-common", features = ["native-deps"] }

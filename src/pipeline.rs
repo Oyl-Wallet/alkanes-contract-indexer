@@ -4,7 +4,7 @@ use deezel_common::traits::{DeezelProvider, JsonRpcProvider, BitcoinRpcProvider}
 use sqlx::PgPool;
 use tracing::info;
 use crate::helpers::pools::{fetch_and_upsert_pools_for_tip};
-use crate::helpers::notify::notify_pools_processed;
+use crate::helpers::notify::{notify_pools_processed, publish_block_processed};
 use crate::helpers::block::{get_block_hash as helper_get_block_hash, get_block_txids as helper_get_block_txids, get_transactions_info as helper_get_transactions_info, tx_has_op_return};
 use crate::helpers::protostone::decode_and_trace_for_block;
 use crate::helpers::protostone::TxDecodeTraceResult;
@@ -176,6 +176,9 @@ impl Pipeline {
 		// Record processed block marker
 		upsert_processed_block(&self.pool, ctx.height as i32, &block_hash, block_ts).await?;
 		info!(height = ctx.height, %block_hash, "recorded ProcessedBlocks entry");
+
+		// Notify downstream services via Redis pub-sub (best effort)
+		publish_block_processed(ctx.height).await;
 
 		Ok(())
 	}

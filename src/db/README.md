@@ -28,13 +28,113 @@ This document describes the current database schema for hot tables and the write
     - BRIN: `blockHeight`
   - Storage/Tuning: `decoded` STORAGE EXTERNAL; table `fillfactor=80`, `autovacuum_vacuum_scale_factor=0.01`, `autovacuum_vacuum_threshold=5000`, `autovacuum_analyze_scale_factor=0.02`
 
-Other tables (Pools, PoolState, PoolSwap/Creation/Mint/Burn, ClockIn*) are documented in `src/schema.rs`. Notable updates:
+### AMM Tables (Pools, States, Swaps, Mints, Burns, Creations)
 
-- Pool* success flag
-  - `PoolSwap`, `PoolMint`, and `PoolBurn` include `successful boolean not null default true`.
-  - Indexes: composite btree indexes on (`successful`,`blockHeight`,`transactionIndex`) exist on these tables to accelerate filtered queries.
-  - Writers (`replace_pool_swaps`, `replace_pool_mints`, `replace_pool_burns`) accept a trailing `successful: bool` and always write a row per candidate invoke. Failed attempts are recorded with zero amounts and `successful=false`.
-  - `PoolCreation` remains success-only (it also has a `successful` column defaulting to true for schema consistency), enforced by decode logic; failures are not recorded in this table due to FK guarantees on (`poolBlockId`,`poolTxId`).
+- ProcessedBlocks
+  - Unique keys: `blockHeight` (unique), `blockHash` (unique)
+  - Columns: `timestamp` timestamptz, `isProcessing` boolean, `createdAt` timestamptz
+  - Indexes:
+    - btree: `blockHash`
+  - Usage: read latest processed block height for cache scoping and API consistency.
+
+- Pool
+  - Primary key: `id` (text)
+  - Unique: (`poolBlockId`,`poolTxId`)
+  - Columns: factory ids (`factoryBlockId`,`factoryTxId`), pool ids (`poolBlockId`,`poolTxId`), token ids (`token0BlockId`,`token0TxId`,`token1BlockId`,`token1TxId`), `poolName`, timestamps
+  - Indexes:
+    - btree: (`factoryBlockId`,`factoryTxId`)
+    - btree: (`token0BlockId`,`token0TxId`,`token1BlockId`,`token1TxId`)  [pair orientation A]
+    - btree: (`token1BlockId`,`token1TxId`,`token0BlockId`,`token0TxId`)  [pair orientation B]
+  - Notes: dual token-pair indexes support symmetric pair searches (e.g., token vs BUSD) for price-related endpoints.
+
+- PoolState
+  - Primary key: `id` (text)
+  - Unique: (`poolId`,`blockHeight`)
+  - Columns: `poolId` (FK -> Pool.id), `blockHeight` int, `token0Amount` text, `token1Amount` text, `tokenSupply` text, `createdAt` timestamptz
+  - Indexes:
+    - btree: `poolId`
+    - btree: `blockHeight`
+  - Optional (recommended when pool histories are hot): composite btree (`poolId`,`blockHeight` DESC) to accelerate descending history fetches and “latest per pool” if using raw SQL DISTINCT ON.
+
+- PoolCreation
+  - Primary key: `id` (text)
+  - Unique: (`poolBlockId`,`poolTxId`)
+  - Columns: tx refs (`transactionId`,`blockHeight`,`transactionIndex`), pool ids, token ids, `token0Amount` text, `token1Amount` text, `tokenSupply` text, `creatorAddress` text, `successful` boolean default true, `timestamp` timestamptz, timestamps
+  - Indexes:
+    - btree: `transactionId`
+    - btree: `blockHeight`
+    - btree: (`poolBlockId`,`poolTxId`)
+    - btree: (`blockHeight`,`transactionIndex`)
+    - btree: (`successful`,`blockHeight`,`transactionIndex`)
+    - btree: (`poolBlockId`,`poolTxId`,`timestamp`)          [pool history]
+    - btree: (`creatorAddress`,`timestamp`)                   [address history]
+    - btree: (`creatorAddress`,`poolBlockId`,`poolTxId`,`timestamp`)  [address+pool history]
+    - BRIN: `timestamp`                                       [coarse pruning on time]
+
+- PoolSwap
+  - Primary key: `id` (text)
+  - Columns: tx refs (`transactionId`,`blockHeight`,`transactionIndex`), pool ids, token ids for sold/bought, `soldAmount` double precision, `boughtAmount` double precision, `sellerAddress` text, `successful` boolean default true, `timestamp` timestamptz, timestamps
+  - Indexes:
+    - btree: `transactionId`
+    - btree: `blockHeight`
+    - btree: (`poolBlockId`,`poolTxId`)
+    - btree: (`blockHeight`,`transactionIndex`)
+    - btree: (`successful`,`blockHeight`,`transactionIndex`)
+    - btree: (`poolBlockId`,`poolTxId`,`timestamp`)           [pool history]
+    - btree: (`soldTokenBlockId`,`soldTokenTxId`,`timestamp`) [token history]
+    - btree: (`boughtTokenBlockId`,`boughtTokenTxId`,`timestamp`) [token history]
+    - btree: (`sellerAddress`,`timestamp`)                     [address history]
+    - btree: (`sellerAddress`,`poolBlockId`,`poolTxId`,`timestamp`) [address+pool]
+    - btree: (`sellerAddress`,`soldTokenBlockId`,`soldTokenTxId`,`timestamp`)   [address+token]
+    - btree: (`sellerAddress`,`boughtTokenBlockId`,`boughtTokenTxId`,`timestamp`) [address+token]
+    - BRIN: `timestamp`
+  - Notes: amounts use double precision for speed; if exact sums are required long-term, consider `numeric(38,18)` and Prisma Decimal mapping.
+
+- PoolMint
+  - Primary key: `id` (text)
+  - Columns: tx refs, pool ids, `lpTokenAmount` text, token ids and amounts (text), `minterAddress` text, `successful` boolean default true, `timestamp` timestamptz, timestamps
+  - Indexes:
+    - btree: `transactionId`
+    - btree: `blockHeight`
+    - btree: (`poolBlockId`,`poolTxId`)
+    - btree: (`blockHeight`,`transactionIndex`)
+    - btree: (`successful`,`blockHeight`,`transactionIndex`)
+    - btree: (`poolBlockId`,`poolTxId`,`timestamp`)           [pool history]
+    - btree: (`minterAddress`,`timestamp`)                    [address history]
+    - btree: (`minterAddress`,`poolBlockId`,`poolTxId`,`timestamp`) [address+pool]
+    - BRIN: `timestamp`
+
+- PoolBurn
+  - Primary key: `id` (text)
+  - Columns: tx refs, pool ids, `lpTokenAmount` text, token ids and amounts (text), `burnerAddress` text, `successful` boolean default true, `timestamp` timestamptz, timestamps
+  - Indexes:
+    - btree: `transactionId`
+    - btree: `blockHeight`
+    - btree: (`poolBlockId`,`poolTxId`)
+    - btree: (`blockHeight`,`transactionIndex`)
+    - btree: (`successful`,`blockHeight`,`transactionIndex`)
+    - btree: (`poolBlockId`,`poolTxId`,`timestamp`)           [pool history]
+    - btree: (`burnerAddress`,`timestamp`)                    [address history]
+    - btree: (`burnerAddress`,`poolBlockId`,`poolTxId`,`timestamp`) [address+pool]
+    - BRIN: `timestamp`
+
+- CuratedPools
+  - Primary key: `id` (text)
+  - Columns: `factoryId` text unique, `poolIds` text[]
+
+- kv_store
+  - Primary key: `key` text
+  - Columns: `value` text
+  - Usage: lightweight progress and configuration storage.
+
+- Profile, CorpData, ClockIn, ClockInSummary, ClockInBlockSummary
+  - Non-AMM tables used by other product surfaces; kept here for completeness. See inline schema for indexes.
+
+#### Success flags and writers
+- `PoolSwap`, `PoolMint`, and `PoolBurn` include `successful boolean not null default true`.
+- Composite btree indexes on (`successful`,`blockHeight`,`transactionIndex`) coexist with time- and entity-oriented indexes for optional success filtering.
+- Writers (`replace_pool_swaps`, `replace_pool_mints`, `replace_pool_burns`) accept a trailing `successful: bool` and replace rows per transaction id.
+- `PoolCreation` includes `successful` primarily for consistency; decode logic only inserts valid creations.
 
 ### Write Paths (batching and replacements)
 

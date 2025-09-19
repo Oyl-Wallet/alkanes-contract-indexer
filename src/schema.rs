@@ -171,6 +171,8 @@ create table if not exists "Pool" (
   constraint "uq_Pool_poolBlockId_poolTxId" unique ("poolBlockId", "poolTxId")
 );
 create index if not exists "idx_Pool_factoryBlockId_factoryTxId" on "Pool"("factoryBlockId", "factoryTxId");
+create index if not exists "idx_Pool_token0_token1" on "Pool"("token0BlockId", "token0TxId", "token1BlockId", "token1TxId");
+create index if not exists "idx_Pool_token1_token0" on "Pool"("token1BlockId", "token1TxId", "token0BlockId", "token0TxId");
 
 create table if not exists "PoolState" (
   "id" text primary key default gen_random_uuid()::text,
@@ -213,6 +215,10 @@ create index if not exists "idx_PoolCreation_blockHeight" on "PoolCreation"("blo
 create index if not exists "idx_PoolCreation_poolBlockId_poolTxId" on "PoolCreation"("poolBlockId", "poolTxId");
 create index if not exists "idx_PoolCreation_blockHeight_transactionIndex" on "PoolCreation"("blockHeight", "transactionIndex");
 create index if not exists "idx_PoolCreation_success_block_tx" on "PoolCreation"("successful", "blockHeight", "transactionIndex");
+create index if not exists "idx_PoolCreation_pool_ts" on "PoolCreation"("poolBlockId", "poolTxId", "timestamp");
+create index if not exists "idx_PoolCreation_creator_ts" on "PoolCreation"("creatorAddress", "timestamp");
+create index if not exists "idx_PoolCreation_creator_pool_ts" on "PoolCreation"("creatorAddress", "poolBlockId", "poolTxId", "timestamp");
+create index if not exists "idx_PoolCreation_brin_timestamp" on "PoolCreation" using brin ("timestamp") with (pages_per_range = 128);
 
 create table if not exists "PoolSwap" (
   "id" text primary key default gen_random_uuid()::text,
@@ -238,6 +244,14 @@ create index if not exists "idx_PoolSwap_blockHeight" on "PoolSwap"("blockHeight
 create index if not exists "idx_PoolSwap_poolBlockId_poolTxId" on "PoolSwap"("poolBlockId", "poolTxId");
 create index if not exists "idx_PoolSwap_blockHeight_transactionIndex" on "PoolSwap"("blockHeight", "transactionIndex");
 create index if not exists "idx_PoolSwap_success_block_tx" on "PoolSwap"("successful", "blockHeight", "transactionIndex");
+create index if not exists "idx_PoolSwap_pool_ts" on "PoolSwap"("poolBlockId", "poolTxId", "timestamp");
+create index if not exists "idx_PoolSwap_soldToken_ts" on "PoolSwap"("soldTokenBlockId", "soldTokenTxId", "timestamp");
+create index if not exists "idx_PoolSwap_boughtToken_ts" on "PoolSwap"("boughtTokenBlockId", "boughtTokenTxId", "timestamp");
+create index if not exists "idx_PoolSwap_seller_ts" on "PoolSwap"("sellerAddress", "timestamp");
+create index if not exists "idx_PoolSwap_seller_pool_ts" on "PoolSwap"("sellerAddress", "poolBlockId", "poolTxId", "timestamp");
+create index if not exists "idx_PoolSwap_seller_soldToken_ts" on "PoolSwap"("sellerAddress", "soldTokenBlockId", "soldTokenTxId", "timestamp");
+create index if not exists "idx_PoolSwap_seller_boughtToken_ts" on "PoolSwap"("sellerAddress", "boughtTokenBlockId", "boughtTokenTxId", "timestamp");
+create index if not exists "idx_PoolSwap_brin_timestamp" on "PoolSwap" using brin ("timestamp") with (pages_per_range = 128);
 
 create table if not exists "PoolBurn" (
   "id" text primary key default gen_random_uuid()::text,
@@ -264,6 +278,10 @@ create index if not exists "idx_PoolBurn_blockHeight" on "PoolBurn"("blockHeight
 create index if not exists "idx_PoolBurn_poolBlockId_poolTxId" on "PoolBurn"("poolBlockId", "poolTxId");
 create index if not exists "idx_PoolBurn_blockHeight_transactionIndex" on "PoolBurn"("blockHeight", "transactionIndex");
 create index if not exists "idx_PoolBurn_success_block_tx" on "PoolBurn"("successful", "blockHeight", "transactionIndex");
+create index if not exists "idx_PoolBurn_pool_ts" on "PoolBurn"("poolBlockId", "poolTxId", "timestamp");
+create index if not exists "idx_PoolBurn_burner_ts" on "PoolBurn"("burnerAddress", "timestamp");
+create index if not exists "idx_PoolBurn_burner_pool_ts" on "PoolBurn"("burnerAddress", "poolBlockId", "poolTxId", "timestamp");
+create index if not exists "idx_PoolBurn_brin_timestamp" on "PoolBurn" using brin ("timestamp") with (pages_per_range = 128);
 
 create table if not exists "PoolMint" (
   "id" text primary key default gen_random_uuid()::text,
@@ -290,6 +308,10 @@ create index if not exists "idx_PoolMint_blockHeight" on "PoolMint"("blockHeight
 create index if not exists "idx_PoolMint_poolBlockId_poolTxId" on "PoolMint"("poolBlockId", "poolTxId");
 create index if not exists "idx_PoolMint_blockHeight_transactionIndex" on "PoolMint"("blockHeight", "transactionIndex");
 create index if not exists "idx_PoolMint_success_block_tx" on "PoolMint"("successful", "blockHeight", "transactionIndex");
+create index if not exists "idx_PoolMint_pool_ts" on "PoolMint"("poolBlockId", "poolTxId", "timestamp");
+create index if not exists "idx_PoolMint_minter_ts" on "PoolMint"("minterAddress", "timestamp");
+create index if not exists "idx_PoolMint_minter_pool_ts" on "PoolMint"("minterAddress", "poolBlockId", "poolTxId", "timestamp");
+create index if not exists "idx_PoolMint_brin_timestamp" on "PoolMint" using brin ("timestamp") with (pages_per_range = 128);
 
 create table if not exists "CuratedPools" (
   "id" text primary key default gen_random_uuid()::text,

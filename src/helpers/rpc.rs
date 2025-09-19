@@ -98,6 +98,61 @@ pub async fn resilient_call<P: DeezelProvider + JsonRpcProvider + Send + Sync>(
     }
 }
 
+/// Variant of resilient_call that includes the last error string in the final Err message
+pub async fn resilient_call_with_last_error<P: DeezelProvider + JsonRpcProvider + Send + Sync>(
+    provider: &P,
+    url: &str,
+    method: &str,
+    params: JsonValue,
+    id: u64,
+) -> Result<JsonValue> {
+    if circuit_open() {
+        return Err(anyhow::anyhow!("rpc_circuit_open"));
+    }
+
+    let _permit = GLOBAL_PERMITS.acquire().await.expect("semaphore poisoned");
+
+    let max_attempts = std::env::var("RPC_MAX_RETRIES").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(5);
+    let base_delay_ms = std::env::var("RPC_BASE_BACKOFF_MS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(200);
+    let max_delay_ms = std::env::var("RPC_MAX_BACKOFF_MS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(5_000);
+    let timeout_ms = std::env::var("RPC_TIMEOUT_MS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(20_000);
+
+    let mut attempt: u32 = 0;
+    let start = Instant::now();
+    let mut last_error: Option<String> = None;
+    loop {
+        attempt += 1;
+        let call_fut = provider.call(url, method, params.clone(), id);
+        match timeout(Duration::from_millis(timeout_ms), call_fut).await {
+            Ok(Ok(val)) => {
+                debug!(%method, attempt, elapsed_ms = start.elapsed().as_millis() as u64, "rpc ok");
+                return Ok(val);
+            }
+            Ok(Err(e)) => {
+                let msg = format!("{e}");
+                last_error = Some(msg.clone());
+                warn!(%method, attempt, error = %msg, "rpc error");
+            }
+            Err(_elapsed) => {
+                let msg = String::from("timeout");
+                last_error = Some(msg.clone());
+                warn!(%method, attempt, "rpc timeout");
+            }
+        }
+
+        if attempt >= max_attempts {
+            error!(%method, attempts = attempt, "rpc failed; opening circuit");
+            trip_circuit();
+            return Err(anyhow::anyhow!(format!("rpc_failed_after_retries: last_error={}", last_error.unwrap_or_default())));
+        }
+
+        let jitter = fastrand::u64(0..base_delay_ms);
+        let delay = ((base_delay_ms as u128) * (1u128 << (attempt - 1) as usize) + jitter as u128)
+            .min(max_delay_ms as u128) as u64;
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+}
+
 /// Generic resilient wrapper for provider operations that return Result<T>
 /// Applies the same timeout/retry/backoff, semaphore, and circuit logic.
 pub async fn resilient_provider_call<T, F, Fut, E>(label: &str, op: F) -> Result<T>

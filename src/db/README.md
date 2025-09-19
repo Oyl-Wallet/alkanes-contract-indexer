@@ -28,7 +28,13 @@ This document describes the current database schema for hot tables and the write
     - BRIN: `blockHeight`
   - Storage/Tuning: `decoded` STORAGE EXTERNAL; table `fillfactor=80`, `autovacuum_vacuum_scale_factor=0.01`, `autovacuum_vacuum_threshold=5000`, `autovacuum_analyze_scale_factor=0.02`
 
-Other tables (Pools, PoolState, PoolSwap/Creation/Mint/Burn, ClockIn*) are unchanged functionally; see `src/schema.rs` for full DDL.
+Other tables (Pools, PoolState, PoolSwap/Creation/Mint/Burn, ClockIn*) are documented in `src/schema.rs`. Notable updates:
+
+- Pool* success flag
+  - `PoolSwap`, `PoolMint`, and `PoolBurn` include `successful boolean not null default true`.
+  - Indexes: composite btree indexes on (`successful`,`blockHeight`,`transactionIndex`) exist on these tables to accelerate filtered queries.
+  - Writers (`replace_pool_swaps`, `replace_pool_mints`, `replace_pool_burns`) accept a trailing `successful: bool` and always write a row per candidate invoke. Failed attempts are recorded with zero amounts and `successful=false`.
+  - `PoolCreation` remains success-only (it also has a `successful` column defaulting to true for schema consistency), enforced by decode logic; failures are not recorded in this table due to FK guarantees on (`poolBlockId`,`poolTxId`).
 
 ### Write Paths (batching and replacements)
 
@@ -43,6 +49,14 @@ Other tables (Pools, PoolState, PoolSwap/Creation/Mint/Burn, ClockIn*) are uncha
   - Deletes existing rows for txids using CTE + `unnest($1::text[])` for better plans on large arrays, then inserts in chunks.
 
 - Replace DecodedProtostone
+ - Replace PoolSwap/PoolMint/PoolBurn
+  - Functions: `db::transactions::{replace_pool_swaps, replace_pool_mints, replace_pool_burns}`
+  - Behavior: delete existing rows for the provided txids, then insert provided rows in chunks under parameter limits.
+  - Shape per row:
+    - PoolSwap: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, soldTokenBlockId, soldTokenTxId, boughtTokenBlockId, boughtTokenTxId, soldAmount double, boughtAmount double, sellerAddress, successful, timestamp)`
+    - PoolMint: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount text, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount text, token1Amount text, minterAddress, successful, timestamp)`
+    - PoolBurn: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount text, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount text, token1Amount text, burnerAddress, successful, timestamp)`
+
   - Function: `db::transactions::replace_decoded_protostones`
   - Shape per row: `(transactionId, vout, protostoneIndex, blockHeight, decoded)`
   - Deletes existing rows for txids using CTE + `unnest`; inserts with `ON CONFLICT ... DO UPDATE` guarded by `IS DISTINCT FROM` on `decoded`.

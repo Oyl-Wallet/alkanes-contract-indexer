@@ -164,7 +164,7 @@ pub async fn index_pool_swaps_for_block(
 
     // Group by txid to delete-then-insert swaps per txid in one shot
     let txids: Vec<String> = results.iter().map(|r| r.0.clone()).collect();
-    let mut swap_rows: Vec<(String, i32, i32, String, String, String, String, String, String, f64, f64, Option<String>, DateTime<Utc>)> = Vec::new();
+    let mut swap_rows: Vec<(String, i32, i32, String, String, String, String, String, String, f64, f64, Option<String>, DateTime<Utc>, bool)> = Vec::new();
 
     for (txid, tx_idx, timestamp, _tx_json, events) in results {
         for (i, ev) in events.iter().enumerate() {
@@ -199,11 +199,10 @@ pub async fn index_pool_swaps_for_block(
             let (expected_b, expected_t) = if has_t0_incoming { (&token1_block, &token1_tx) } else { (&token0_block, &token0_tx) };
             let ret = find_matching_return_strict(i, events, invoke_vout, expected_b, expected_t, &allowed_amounts)
                 .or_else(|| find_matching_return(i, events, invoke_vout));
-            let Some(ret) = ret else { continue };
-
-            // Outgoing alkanes on return
+            let success = ret.is_some();
             let outgoing: Vec<JsonValue> = ret
-                .get("data").and_then(|d| d.get("response")).and_then(|c| c.get("alkanes")).and_then(|a| a.as_array()).cloned().unwrap_or_default();
+                .map(|r| r.get("data").and_then(|d| d.get("response")).and_then(|c| c.get("alkanes")).and_then(|a| a.as_array()).cloned().unwrap_or_default())
+                .unwrap_or_default();
 
             let t0_in = calculate_token_total(&incoming, &token0_block, &token0_tx);
             let t0_out = calculate_token_total(&outgoing, &token0_block, &token0_tx);
@@ -217,7 +216,7 @@ pub async fn index_pool_swaps_for_block(
                 (token1_block.clone(), token1_tx.clone(), token0_block.clone(), token0_tx.clone(), t1_in, t0_out)
             };
 
-            if sold_amount_u128 == 0 || bought_amount_u128 == 0 { continue; }
+            let amounts_valid = sold_amount_u128 > 0 && bought_amount_u128 > 0;
 
             // Determine sellerAddress from DecodedProtostone.pointer_destination.address for this txid+vout
             let seller_address: Option<String> = decoded_by_tx_vout
@@ -237,6 +236,7 @@ pub async fn index_pool_swaps_for_block(
                     None
                 });
 
+            // Push row; if not successful or amounts invalid, push zeros and successful=false
             swap_rows.push((
                 txid.clone(),
                 block_height,
@@ -247,10 +247,11 @@ pub async fn index_pool_swaps_for_block(
                 sold_tx,
                 bought_block,
                 bought_tx,
-                sold_amount_u128 as f64,
-                bought_amount_u128 as f64,
+                if success && amounts_valid { sold_amount_u128 as f64 } else { 0.0 },
+                if success && amounts_valid { bought_amount_u128 as f64 } else { 0.0 },
                 seller_address,
                 *timestamp,
+                success && amounts_valid,
             ));
         }
     }

@@ -201,6 +201,7 @@ create table if not exists "PoolCreation" (
   "token1Amount" text not null,
   "tokenSupply" text not null,
   "creatorAddress" text,
+  "successful" boolean not null default true,
   "timestamp" timestamptz not null,
   "createdAt" timestamptz not null default now(),
   "updatedAt" timestamptz not null default now(),
@@ -211,6 +212,7 @@ create index if not exists "idx_PoolCreation_transactionId" on "PoolCreation"("t
 create index if not exists "idx_PoolCreation_blockHeight" on "PoolCreation"("blockHeight");
 create index if not exists "idx_PoolCreation_poolBlockId_poolTxId" on "PoolCreation"("poolBlockId", "poolTxId");
 create index if not exists "idx_PoolCreation_blockHeight_transactionIndex" on "PoolCreation"("blockHeight", "transactionIndex");
+create index if not exists "idx_PoolCreation_success_block_tx" on "PoolCreation"("successful", "blockHeight", "transactionIndex");
 
 create table if not exists "PoolSwap" (
   "id" text primary key default gen_random_uuid()::text,
@@ -226,6 +228,7 @@ create table if not exists "PoolSwap" (
   "soldAmount" double precision not null,
   "boughtAmount" double precision not null,
   "sellerAddress" text,
+  "successful" boolean not null default true,
   "timestamp" timestamptz not null,
   "createdAt" timestamptz not null default now(),
   "updatedAt" timestamptz not null default now()
@@ -234,6 +237,7 @@ create index if not exists "idx_PoolSwap_transactionId" on "PoolSwap"("transacti
 create index if not exists "idx_PoolSwap_blockHeight" on "PoolSwap"("blockHeight");
 create index if not exists "idx_PoolSwap_poolBlockId_poolTxId" on "PoolSwap"("poolBlockId", "poolTxId");
 create index if not exists "idx_PoolSwap_blockHeight_transactionIndex" on "PoolSwap"("blockHeight", "transactionIndex");
+create index if not exists "idx_PoolSwap_success_block_tx" on "PoolSwap"("successful", "blockHeight", "transactionIndex");
 
 create table if not exists "PoolBurn" (
   "id" text primary key default gen_random_uuid()::text,
@@ -250,6 +254,7 @@ create table if not exists "PoolBurn" (
   "token0Amount" text not null,
   "token1Amount" text not null,
   "burnerAddress" text,
+  "successful" boolean not null default true,
   "timestamp" timestamptz not null,
   "createdAt" timestamptz not null default now(),
   "updatedAt" timestamptz not null default now()
@@ -258,6 +263,7 @@ create index if not exists "idx_PoolBurn_transactionId" on "PoolBurn"("transacti
 create index if not exists "idx_PoolBurn_blockHeight" on "PoolBurn"("blockHeight");
 create index if not exists "idx_PoolBurn_poolBlockId_poolTxId" on "PoolBurn"("poolBlockId", "poolTxId");
 create index if not exists "idx_PoolBurn_blockHeight_transactionIndex" on "PoolBurn"("blockHeight", "transactionIndex");
+create index if not exists "idx_PoolBurn_success_block_tx" on "PoolBurn"("successful", "blockHeight", "transactionIndex");
 
 create table if not exists "PoolMint" (
   "id" text primary key default gen_random_uuid()::text,
@@ -274,6 +280,7 @@ create table if not exists "PoolMint" (
   "token0Amount" text not null,
   "token1Amount" text not null,
   "minterAddress" text,
+  "successful" boolean not null default true,
   "timestamp" timestamptz not null,
   "createdAt" timestamptz not null default now(),
   "updatedAt" timestamptz not null default now()
@@ -282,6 +289,7 @@ create index if not exists "idx_PoolMint_transactionId" on "PoolMint"("transacti
 create index if not exists "idx_PoolMint_blockHeight" on "PoolMint"("blockHeight");
 create index if not exists "idx_PoolMint_poolBlockId_poolTxId" on "PoolMint"("poolBlockId", "poolTxId");
 create index if not exists "idx_PoolMint_blockHeight_transactionIndex" on "PoolMint"("blockHeight", "transactionIndex");
+create index if not exists "idx_PoolMint_success_block_tx" on "PoolMint"("successful", "blockHeight", "transactionIndex");
 
 create table if not exists "CuratedPools" (
   "id" text primary key default gen_random_uuid()::text,
@@ -296,6 +304,12 @@ create table if not exists kv_store (
   key text primary key,
   value text not null
 );
+
+-- backfill columns for existing deployments
+alter table "PoolCreation" add column if not exists "successful" boolean not null default true;
+alter table "PoolSwap" add column if not exists "successful" boolean not null default true;
+alter table "PoolBurn" add column if not exists "successful" boolean not null default true;
+alter table "PoolMint" add column if not exists "successful" boolean not null default true;
 "#;
 
 const DROP_ALL: &str = r#"

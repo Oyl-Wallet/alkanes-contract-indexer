@@ -13,6 +13,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
   - decodes Runestone/Protostone for OP_RETURN transactions and calls `alkanes_trace` per decoded protostone using 10-way batched parallelism
   - persists results in Postgres in a single transaction per block: upserts `AlkaneTransaction`, replaces `DecodedProtostone` and flattened per-event `TraceEvent` rows for affected `transactionId`s
 - **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`. Large batches are automatically chunked to stay within SQL bind parameter limits. Deletes for replacement use CTE+unnest for better plans on large arrays.
+ - **Pool* success flag**: `PoolSwap`, `PoolMint`, and `PoolBurn` now record both successful and failed attempts. Successful rows have computed amounts and `successful=true`; failed attempts are recorded with zero amounts and `successful=false`. `PoolCreation` remains success-only (but includes a `successful` column defaulting to true for consistency).
  - **Processed blocks tracking**: After each `process_block_sequential` completes, the service upserts into `ProcessedBlocks` with `(blockHeight, blockHash, timestamp, isProcessing=false)`. The timestamp comes from the first transaction's `status.block_time` in the block if available, otherwise `Utc::now()`.
 
 ### Repository Structure
@@ -27,8 +28,8 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/helpers/protostone.rs`: Runestone/Protostone decode + trace orchestration.
 - `src/helpers/poolswap.rs`: PoolSwap indexer that reads `TraceEvent` JSON, `DecodedProtostone` (for pointer destinations), and `Pool` metadata to derive swaps and write `PoolSwap` rows.
 - `src/helpers/poolcreate.rs`: Pool creation (initial liquidity) indexer that detects opcode `0x0` delegatecalls and writes `PoolCreation` rows.
-- `src/helpers/poolmint.rs`: Pool mint (add_liquidity) indexer that detects opcode `0x1` delegatecalls and writes `PoolMint` rows.
-- `src/helpers/poolburn.rs`: Pool burn (remove_liquidity) indexer that detects opcode `0x2` delegatecalls and writes `PoolBurn` rows.
+- `src/helpers/poolmint.rs`: Pool mint (add_liquidity) indexer that detects opcode `0x1` delegatecalls and writes `PoolMint` rows (now also writes failed attempts with `successful=false`).
+- `src/helpers/poolburn.rs`: Pool burn (remove_liquidity) indexer that detects opcode `0x2` delegatecalls and writes `PoolBurn` rows (now also writes failed attempts with `successful=false`).
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
@@ -243,26 +244,26 @@ This will:
   - Ensure `context.incomingAlkanes` contains one of the pool tokens.
   - Extract desired output amounts from `inputs[1]` and/or `inputs[2]` (hex) when present.
   - Find the next `return` with the same `vout`, preferring one that returns the opposite token and whose amount matches `inputs[1]`/`inputs[2]`.
-  - Compute totals for token0/token1 on invoke/return and infer sell/buy direction; persist only when both amounts > 0.
-- Persist into `PoolSwap` with a single batch write (also chunked under param limits). `sellerAddress` is resolved by reading `pointer_destination.address` from the matched protostone's decoded object for the transaction's `vout`.
+  - Compute totals for token0/token1 on invoke/return and infer sell/buy direction.
+  - Persist into `PoolSwap` with a single batch write (also chunked under param limits). Rows are always written for candidate invokes: if a matching `return` is not found or computed amounts are zero, the row is written with `soldAmount=0`, `boughtAmount=0`, and `successful=false`. `sellerAddress` is resolved by reading `pointer_destination.address` from the matched protostone's decoded object for the transaction's `vout`.
 
 - Decode PoolCreation rows:
   - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x0`.
   - Identify token0/token1 from `invoke.context.incomingAlkanes` (excluding the poolId/LP token).
   - Choose the matching `return` on the same `vout` where LP out > LP in, preferring minimal token outs.
-  - Compute net token0/token1 contributions and LP supply; persist rows when all nets > 0. `creatorAddress` is resolved from decoded protostone at the `vout` when available.
+  - Compute net token0/token1 contributions and LP supply; persist rows when all nets > 0. `creatorAddress` is resolved from decoded protostone at the `vout` when available. `PoolCreation` remains success-only; failed attempts are not recorded in this table.
 
 - Decode PoolMint (add_liquidity) rows:
- - Decode PoolBurn (remove_liquidity) rows:
-  - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x2`.
-  - Use `Pool` to resolve token0/token1 for the poolId (`alkaneAddressBlock/Tx`).
-  - Choose the matching `return` on the same `vout` where the user receives more token0 and token1 (net positive out) and where the LP token amount in `response.alkanes` is strictly less than any LP in `invoke.context.incomingAlkanes` (net burned). If multiple such returns exist, prefer the one with the smallest LP remaining (tie-breaker: the latest such return).
-  - Compute net amounts: token0Amount = out - in, token1Amount = out - in, lpTokenAmount = lp_in - lp_out. Persist only if all nets > 0. `burnerAddress` is resolved from decoded protostone at the `vout` when available.
-
   - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x1`.
   - Use `Pool` to resolve token0/token1 for the poolId (`alkaneAddressBlock/Tx`).
   - Choose the matching `return` on the same `vout` where the LP token (poolId) appears in `response.alkanes` with amount strictly greater than any incoming LP (net minted). On multiple candidates, prefer minimal token outs (latest on tie).
-  - Compute net amounts: token0Amount = in - out, token1Amount = in - out, lpTokenAmount = lp_out - lp_in. Persist only if all nets > 0. `minterAddress` is resolved from decoded protostone at the `vout` when available.
+  - Compute net amounts: token0Amount = in - out, token1Amount = in - out, lpTokenAmount = lp_out - lp_in. Rows are always written for candidate invokes: if a matching `return` is not found or computed nets are zero, the row is written with zero amounts and `successful=false`. Otherwise amounts are populated and `successful=true`. `minterAddress` is resolved from decoded protostone at the `vout` when available.
+
+- Decode PoolBurn (remove_liquidity) rows:
+  - Filter to `invoke` events with `data.type == "delegatecall"` and opcode `inputs[0] == 0x2`.
+  - Use `Pool` to resolve token0/token1 for the poolId (`alkaneAddressBlock/Tx`).
+  - Choose the matching `return` on the same `vout` where the user receives more token0 and token1 (net positive out) and where the LP token amount in `response.alkanes` is strictly less than any LP in `invoke.context.incomingAlkanes` (net burned). If multiple such returns exist, prefer the one with the smallest LP remaining (tie-breaker: the latest such return).
+  - Compute net amounts: token0Amount = out - in, token1Amount = out - in, lpTokenAmount = lp_in - lp_out. Rows are always written for candidate invokes: if a matching `return` is not found or computed nets are zero, the row is written with zero amounts and `successful=false`. Otherwise amounts are populated and `successful=true`. `burnerAddress` is resolved from decoded protostone at the `vout` when available.
 
 Notes on ID/value normalization:
 - Token IDs and values in trace JSON may appear as u128 `{hi,lo}` objects, hex strings (e.g., `"0x2"`), decimal strings, or numbers.

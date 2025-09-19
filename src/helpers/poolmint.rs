@@ -100,7 +100,7 @@ pub async fn index_pool_mints_for_block(
 
     // Gather mint rows across all txs
     let mut mint_rows: Vec<(
-        String, i32, i32, String, String, String, String, String, String, String, String, String, Option<String>, DateTime<Utc>
+        String, i32, i32, String, String, String, String, String, String, String, String, String, Option<String>, DateTime<Utc>, bool
     )> = Vec::new();
 
     for (txid, tx_idx, timestamp, _tx_json, events) in results.iter() {
@@ -162,11 +162,11 @@ pub async fn index_pool_mints_for_block(
                 let better = match chosen_idx { None => true, Some(_) => score.0 < best_score.0 || (score.0 == best_score.0 && (score.1 < best_score.1 || (score.1 == best_score.1 && score.2 > best_score.2))) };
                 if better { chosen_idx = Some(j); best_score = score; }
             }
-            let Some(chosen_j) = chosen_idx else { continue };
-            let ret = &ordered_events[chosen_j];
-
-            let outgoing: Vec<JsonValue> = ret
-                .get("data").and_then(|d| d.get("response")).and_then(|c| c.get("alkanes")).and_then(|a| a.as_array()).cloned().unwrap_or_default();
+            let success = chosen_idx.is_some();
+            let outgoing: Vec<JsonValue> = chosen_idx
+                .map(|j| &ordered_events[j])
+                .map(|ret| ret.get("data").and_then(|d| d.get("response")).and_then(|c| c.get("alkanes")).and_then(|a| a.as_array()).cloned().unwrap_or_default())
+                .unwrap_or_default();
 
             // Compute net amounts
             let t0_in_total = calculate_token_total(&incoming, &token0_block, &token0_tx);
@@ -178,7 +178,7 @@ pub async fn index_pool_mints_for_block(
             let token0_amount_u128 = t0_in_total.saturating_sub(t0_out_total);
             let token1_amount_u128 = t1_in_total.saturating_sub(t1_out_total);
             let lp_amount_u128 = lp_out_total.saturating_sub(incoming_lp);
-            if token0_amount_u128 == 0 || token1_amount_u128 == 0 || lp_amount_u128 == 0 { continue; }
+            let amounts_valid = token0_amount_u128 > 0 && token1_amount_u128 > 0 && lp_amount_u128 > 0;
 
             // Optional minter address via decoded protostone at this vout
             let minter_address: Option<String> = decoded_by_tx_vout
@@ -199,15 +199,16 @@ pub async fn index_pool_mints_for_block(
                 *tx_idx,
                 pool_block.clone(),
                 pool_tx.clone(),
-                lp_amount_u128.to_string(),
+                if success && amounts_valid { lp_amount_u128.to_string() } else { "0".to_string() },
                 token0_block.clone(),
                 token0_tx.clone(),
                 token1_block.clone(),
                 token1_tx.clone(),
-                token0_amount_u128.to_string(),
-                token1_amount_u128.to_string(),
+                if success && amounts_valid { token0_amount_u128.to_string() } else { "0".to_string() },
+                if success && amounts_valid { token1_amount_u128.to_string() } else { "0".to_string() },
                 minter_address,
                 *timestamp,
+                success && amounts_valid,
             ));
         }
     }

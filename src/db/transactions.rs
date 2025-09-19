@@ -166,8 +166,8 @@ pub async fn get_decoded_protostones_by_txid_vout(
 pub async fn replace_pool_swaps(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     txids: &[String],
-    // (transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, soldTokenBlockId, soldTokenTxId, boughtTokenBlockId, boughtTokenTxId, soldAmount, boughtAmount, sellerAddress, timestamp)
-    swaps: &[(String, i32, i32, String, String, String, String, String, String, f64, f64, Option<String>, chrono::DateTime<chrono::Utc>)],
+    // (transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, soldTokenBlockId, soldTokenTxId, boughtTokenBlockId, boughtTokenTxId, soldAmount, boughtAmount, sellerAddress, timestamp, successful)
+    swaps: &[(String, i32, i32, String, String, String, String, String, String, f64, f64, Option<String>, chrono::DateTime<chrono::Utc>, bool)],
 ) -> Result<()> {
     if !txids.is_empty() {
         sqlx::query(r#"delete from "PoolSwap" where "transactionId" = any($1)"#)
@@ -178,20 +178,20 @@ pub async fn replace_pool_swaps(
     if swaps.is_empty() { return Ok(()); }
 
     const MAX_PARAMS: usize = 65535;
-    const PER_ROW: usize = 13;
+    const PER_ROW: usize = 14;
     let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1);
 
     for chunk in swaps.chunks(max_rows) {
         let mut q = String::from(
-            "insert into \"PoolSwap\" (\"transactionId\", \"blockHeight\", \"transactionIndex\", \"poolBlockId\", \"poolTxId\", \"soldTokenBlockId\", \"soldTokenTxId\", \"boughtTokenBlockId\", \"boughtTokenTxId\", \"soldAmount\", \"boughtAmount\", \"sellerAddress\", \"timestamp\") values ",
+            "insert into \"PoolSwap\" (\"transactionId\", \"blockHeight\", \"transactionIndex\", \"poolBlockId\", \"poolTxId\", \"soldTokenBlockId\", \"soldTokenTxId\", \"boughtTokenBlockId\", \"boughtTokenTxId\", \"soldAmount\", \"boughtAmount\", \"sellerAddress\", \"successful\", \"timestamp\") values ",
         );
         for i in 0..chunk.len() {
             if i > 0 { q.push(','); }
             let base = i * PER_ROW;
-            q.push_str(&format!("(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})", base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11, base+12, base+13));
+            q.push_str(&format!("(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})", base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11, base+12, base+13, base+14));
         }
         let mut qb = sqlx::query(&q);
-        for (txid, bh, idx, pb, pt, sb, st, bb, bt, s_amt, b_amt, seller, ts) in chunk {
+        for (txid, bh, idx, pb, pt, sb, st, bb, bt, s_amt, b_amt, seller, ts, success) in chunk {
             qb = qb
                 .bind(txid)
                 .bind(bh)
@@ -205,6 +205,7 @@ pub async fn replace_pool_swaps(
                 .bind(s_amt)
                 .bind(b_amt)
                 .bind(seller)
+                .bind(success)
                 .bind(ts);
         }
         qb.execute(&mut **tx).await?;
@@ -289,7 +290,7 @@ pub async fn replace_pool_creations(
 pub async fn replace_pool_mints(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     txids: &[String],
-    // (transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount, token1Amount, minterAddress, timestamp)
+    // (transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount, token1Amount, minterAddress, timestamp, successful)
     mints: &[(
         String,
         i32,
@@ -305,6 +306,7 @@ pub async fn replace_pool_mints(
         String,
         Option<String>,
         chrono::DateTime<chrono::Utc>,
+        bool,
     )],
 ) -> Result<()> {
     if !txids.is_empty() {
@@ -316,24 +318,24 @@ pub async fn replace_pool_mints(
     if mints.is_empty() { return Ok(()); }
 
     const MAX_PARAMS: usize = 65535;
-    const PER_ROW: usize = 14;
+    const PER_ROW: usize = 15;
     let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1);
 
     for chunk in mints.chunks(max_rows) {
         let mut q = String::from(
-            "insert into \"PoolMint\" (\"transactionId\", \"blockHeight\", \"transactionIndex\", \"poolBlockId\", \"poolTxId\", \"lpTokenAmount\", \"token0BlockId\", \"token0TxId\", \"token1BlockId\", \"token1TxId\", \"token0Amount\", \"token1Amount\", \"minterAddress\", \"timestamp\") values ",
+            "insert into \"PoolMint\" (\"transactionId\", \"blockHeight\", \"transactionIndex\", \"poolBlockId\", \"poolTxId\", \"lpTokenAmount\", \"token0BlockId\", \"token0TxId\", \"token1BlockId\", \"token1TxId\", \"token0Amount\", \"token1Amount\", \"minterAddress\", \"successful\", \"timestamp\") values ",
         );
         for i in 0..chunk.len() {
             if i > 0 { q.push(','); }
             let base = i * PER_ROW;
             q.push_str(&format!(
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
-                base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11, base+12, base+13, base+14
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11, base+12, base+13, base+14, base+15
             ));
         }
         let mut qb = sqlx::query(&q);
         for (
-            txid, bh, idx, pb, pt, lp_amt, t0b, t0t, t1b, t1t, a0, a1, minter, ts
+            txid, bh, idx, pb, pt, lp_amt, t0b, t0t, t1b, t1t, a0, a1, minter, ts, success
         ) in chunk {
             qb = qb
                 .bind(txid)
@@ -349,6 +351,7 @@ pub async fn replace_pool_mints(
                 .bind(a0)
                 .bind(a1)
                 .bind(minter)
+                .bind(success)
                 .bind(ts);
         }
         qb.execute(&mut **tx).await?;
@@ -361,7 +364,7 @@ pub async fn replace_pool_mints(
 pub async fn replace_pool_burns(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     txids: &[String],
-    // (transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount, token1Amount, burnerAddress, timestamp)
+    // (transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount, token1Amount, burnerAddress, timestamp, successful)
     burns: &[(
         String,
         i32,
@@ -377,6 +380,7 @@ pub async fn replace_pool_burns(
         String,
         Option<String>,
         chrono::DateTime<chrono::Utc>,
+        bool,
     )],
 ) -> Result<()> {
     if !txids.is_empty() {
@@ -388,24 +392,24 @@ pub async fn replace_pool_burns(
     if burns.is_empty() { return Ok(()); }
 
     const MAX_PARAMS: usize = 65535;
-    const PER_ROW: usize = 14;
+    const PER_ROW: usize = 15;
     let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1);
 
     for chunk in burns.chunks(max_rows) {
         let mut q = String::from(
-            "insert into \"PoolBurn\" (\"transactionId\", \"blockHeight\", \"transactionIndex\", \"poolBlockId\", \"poolTxId\", \"lpTokenAmount\", \"token0BlockId\", \"token0TxId\", \"token1BlockId\", \"token1TxId\", \"token0Amount\", \"token1Amount\", \"burnerAddress\", \"timestamp\") values ",
+            "insert into \"PoolBurn\" (\"transactionId\", \"blockHeight\", \"transactionIndex\", \"poolBlockId\", \"poolTxId\", \"lpTokenAmount\", \"token0BlockId\", \"token0TxId\", \"token1BlockId\", \"token1TxId\", \"token0Amount\", \"token1Amount\", \"burnerAddress\", \"successful\", \"timestamp\") values ",
         );
         for i in 0..chunk.len() {
             if i > 0 { q.push(','); }
             let base = i * PER_ROW;
             q.push_str(&format!(
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
-                base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11, base+12, base+13, base+14
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11, base+12, base+13, base+14, base+15
             ));
         }
         let mut qb = sqlx::query(&q);
         for (
-            txid, bh, idx, pb, pt, lp_amt, t0b, t0t, t1b, t1t, a0, a1, burner, ts
+            txid, bh, idx, pb, pt, lp_amt, t0b, t0t, t1b, t1t, a0, a1, burner, ts, success
         ) in chunk {
             qb = qb
                 .bind(txid)
@@ -421,6 +425,7 @@ pub async fn replace_pool_burns(
                 .bind(a0)
                 .bind(a1)
                 .bind(burner)
+                .bind(success)
                 .bind(ts);
         }
         qb.execute(&mut **tx).await?;

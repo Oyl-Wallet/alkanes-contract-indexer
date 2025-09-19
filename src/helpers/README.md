@@ -85,7 +85,7 @@ Indexes AMM pool swap events from stored trace events and writes structured rows
   5. Infer trade direction:
      - If token0_out == 0 and token1_in == 0 → selling token0 for token1
      - Else → selling token1 for token0
-  6. Only persist rows where both sold and bought amounts are > 0.
+  6. Persist a row for every candidate invoke. If a matching `return` is not found or computed amounts are zero, write `soldAmount=0`, `boughtAmount=0`, and `successful=false`. Otherwise write computed amounts and `successful=true`.
   7. Perform a single `replace_pool_swaps` call which deletes existing rows for the block’s txids and inserts the new set.
 
 - Performance:
@@ -120,7 +120,7 @@ Indexes AMM pool creation (initial liquidity) events from stored trace events an
      - token0_amount = sum(invoke.incomingAlkanes[token0]) - sum(return.response.alkanes[token0])
      - token1_amount = sum(invoke.incomingAlkanes[token1]) - sum(return.response.alkanes[token1])
      - token_supply  = sum(return.response.alkanes[lpId]) - sum(invoke.incomingAlkanes[lpId])
-  6. Persist only if all three nets are > 0.
+  6. Persist only if all three nets are > 0. `PoolCreation` remains success-only; failed attempts are not recorded.
 
 - Implementation notes:
   - LP token id equals the pool id (`alkaneAddressBlock/alkaneAddressTx`).
@@ -143,7 +143,7 @@ Indexes AMM pool mint (add_liquidity) events from stored trace events and writes
      - token0Amount = sum(invoke.incomingAlkanes[token0]) - sum(return.response.alkanes[token0])
      - token1Amount = sum(invoke.incomingAlkanes[token1]) - sum(return.response.alkanes[token1])
      - lpTokenAmount = sum(return.response.alkanes[poolId]) - sum(invoke.incomingAlkanes[poolId])
-  6. Persist only if all three nets are > 0.
+  6. Persist a row for every candidate invoke. If a matching `return` is not found or computed nets are zero, write zero amounts and `successful=false`. Otherwise write computed amounts and `successful=true`.
 
 - Implementation notes:
   - LP token id equals the pool id (`alkaneAddressBlock/alkaneAddressTx`). The chosen return is guaranteed to include the LP token with amount strictly greater than incoming LP (if any).
@@ -164,7 +164,7 @@ Indexes AMM pool burn (remove_liquidity) events from stored trace events and wri
      - token0Amount = sum(return.response.alkanes[token0]) - sum(invoke.incomingAlkanes[token0])
      - token1Amount = sum(return.response.alkanes[token1]) - sum(invoke.incomingAlkanes[token1])
      - lpTokenAmount = sum(invoke.incomingAlkanes[poolId]) - sum(return.response.alkanes[poolId])
-  6. Persist only if all three nets are > 0.
+  6. Persist a row for every candidate invoke. If a matching `return` is not found or computed nets are zero, write zero amounts and `successful=false`. Otherwise write computed amounts and `successful=true`.
 
 - Implementation notes:
   - LP token id equals the pool id (`alkaneAddressBlock/alkaneAddressTx`).

@@ -12,7 +12,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
   - filters transactions for OP_RETURN outputs and logs the count
   - decodes Runestone/Protostone for OP_RETURN transactions and calls `alkanes_trace` per decoded protostone using 10-way batched parallelism
   - persists results in Postgres in a single transaction per block: upserts `AlkaneTransaction`, replaces `DecodedProtostone` and flattened per-event `TraceEvent` rows for affected `transactionId`s
-- **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`. Large batches are automatically chunked to stay within SQL bind parameter limits.
+- **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`. Large batches are automatically chunked to stay within SQL bind parameter limits. Deletes for replacement use CTE+unnest for better plans on large arrays.
  - **Processed blocks tracking**: After each `process_block_sequential` completes, the service upserts into `ProcessedBlocks` with `(blockHeight, blockHash, timestamp, isProcessing=false)`. The timestamp comes from the first transaction's `status.block_time` in the block if available, otherwise `Utc::now()`.
 
 ### Repository Structure
@@ -178,11 +178,14 @@ cargo run --bin dbctl -- reset
 cargo run --bin dbctl -- drop
 ```
 
-The schema mirrors the previous Prisma-based design (types mapped to Postgres):
+The schema mirrors the previous Prisma-based design (types mapped to Postgres) with performance-focused modifications:
 - strings as `text`/`uuid`, JSON as `jsonb`, datetimes as `timestamptz`.
 - tables include: `"AlkaneTransaction"`, `"TraceEvent"`, `"DecodedProtostone"`, `"ClockIn"`, `"ProcessedBlocks"`,
   `"ClockInBlockSummary"`, `"ClockInSummary"`, `"CorpData"`, `"Profile"`, `"Pool"`, `"PoolState"`,
   `"PoolCreation"`, `"PoolSwap"`, `"PoolBurn"`, `"PoolMint"`, `"CuratedPools"`, and `kv_store`.
+- `AlkaneTransaction`: primary key is now `transactionId` (surrogate id removed). Indexes: composite btree on (`blockHeight`,`transactionIndex`) and BRIN on `blockHeight`. JSONB `transactionData` stored EXTERNAL.
+- `TraceEvent`: now includes `blockHeight`; `id` is `uuid`. Indexes: btree on `transactionId`, btree on (`blockHeight`,`eventType`), BRIN on `blockHeight`. Fillfactor/autovacuum tuned; JSONB `data` stored EXTERNAL.
+- `DecodedProtostone`: composite primary key (`transactionId`,`vout`,`protostoneIndex`), includes `blockHeight`. BRIN on `blockHeight`. Fillfactor/autovacuum tuned; JSONB `decoded` stored EXTERNAL.
 
 ### Schema naming and compatibility
 - Table and column names preserve the original Prisma casing by using quoted identifiers (e.g., `"AlkaneTransaction"`, `"blockHeight"`).
@@ -311,10 +314,10 @@ The decode/trace flow lives in `src/helpers/protostone.rs` and is invoked from `
    - Compute shadow vouts per protostone: `start = tx.output.len() + 1; vout = start + i`.
    - Reverse txid to little-endian and call `alkanes_trace` per protostone.
 4. The pipeline batches and writes:
-   - Upsert `"AlkaneTransaction"` rows (blockHeight, transactionId, transactionIndex, hasTrace, traceSucceed, transactionData)
-   - Replace `"DecodedProtostone"` rows for affected txids with `(transactionId, vout, protostoneIndex, decoded)`
-  - Replace `"TraceEvent"` rows for affected txids with `(transactionId, vout, eventType, data, alkaneAddressBlock, alkaneAddressTx)`; one row per event (`invoke`, `return`, etc.). For `invoke`, `alkaneAddress*` is derived from `context.myself` and converted from hex (e.g. `0x2`) to decimal string (e.g. `2`).
-   - All writes occur in a single SQL transaction and are indexable by `transactionId`. Batches are chunked to respect `sqlx`/Postgres parameter limits and avoid panics.
+   - Upsert `"AlkaneTransaction"` rows `(blockHeight, transactionId, transactionIndex, hasTrace, traceSucceed, transactionData)`.
+   - Replace `"DecodedProtostone"` rows for affected txids with `(transactionId, vout, protostoneIndex, blockHeight, decoded)`.
+   - Replace `"TraceEvent"` rows for affected txids with `(transactionId, blockHeight, vout, eventType, data, alkaneAddressBlock, alkaneAddressTx)`; one row per event (`invoke`, `return`, etc.). For `invoke`, `alkaneAddress*` is derived from `context.myself` and converted from hex (e.g. `0x2`) to decimal string (e.g. `2`).
+   - Deletes use `with ids as (select unnest($1::text[]) as txid) delete ... using ids` for efficient plans. Writes occur in a single SQL transaction and are chunked to respect Postgres parameter limits.
 
 The code is instrumented with INFO logs at each step, plus per-block timing in `process_block_sequential`.
 

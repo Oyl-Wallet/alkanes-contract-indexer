@@ -51,33 +51,38 @@ pub async fn upsert_alkane_transactions(
 pub async fn replace_trace_events(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     txids: &[String],
-    // (transactionId, vout, eventType, data, alkaneAddressBlock, alkaneAddressTx)
-    events: &[(String, i32, String, JsonValue, String, String)],
+    // (transactionId, blockHeight, vout, eventType, data, alkaneAddressBlock, alkaneAddressTx)
+    events: &[(String, i32, i32, String, JsonValue, String, String)],
 ) -> Result<()> {
     if !txids.is_empty() {
-        sqlx::query(r#"delete from "TraceEvent" where "transactionId" = any($1)"#)
-            .bind(txids)
-            .execute(&mut **tx)
-            .await?;
+        // Use CTE with unnest for better plans at large array sizes
+        sqlx::query(
+            r#"with ids as (select unnest($1::text[]) as txid)
+               delete from "TraceEvent" te using ids
+               where te."transactionId" = ids.txid"#,
+        )
+        .bind(txids)
+        .execute(&mut **tx)
+        .await?;
     }
     if events.is_empty() { return Ok(()); }
 
     const MAX_PARAMS: usize = 65535;
-    const PER_ROW: usize = 6;
+    const PER_ROW: usize = 7;
     let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1).min(2000);
 
     for chunk in events.chunks(max_rows) {
         let mut q = String::from(
-            "insert into \"TraceEvent\" (\"transactionId\", \"vout\", \"eventType\", \"data\", \"alkaneAddressBlock\", \"alkaneAddressTx\") values ",
+            "insert into \"TraceEvent\" (\"transactionId\", \"blockHeight\", \"vout\", \"eventType\", \"data\", \"alkaneAddressBlock\", \"alkaneAddressTx\") values ",
         );
         for i in 0..chunk.len() {
             if i > 0 { q.push(','); }
             let base = i * PER_ROW;
-            q.push_str(&format!("(${}, ${}, ${}, ${}, ${}, ${})", base+1, base+2, base+3, base+4, base+5, base+6));
+            q.push_str(&format!("(${}, ${}, ${}, ${}, ${}, ${}, ${})", base+1, base+2, base+3, base+4, base+5, base+6, base+7));
         }
         let mut qb = sqlx::query(&q);
-        for (txid, vout, etype, data, blk, txnum) in chunk {
-            qb = qb.bind(txid).bind(vout).bind(etype).bind(data).bind(blk).bind(txnum);
+        for (txid, block_height, vout, etype, data, blk, txnum) in chunk {
+            qb = qb.bind(txid).bind(block_height).bind(vout).bind(etype).bind(data).bind(blk).bind(txnum);
         }
         qb.execute(&mut **tx).await?;
     }
@@ -88,34 +93,38 @@ pub async fn replace_trace_events(
 pub async fn replace_decoded_protostones(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     txids: &[String],
-    // (transactionId, vout, protostoneIndex, decoded_json)
-    items: &[(String, i32, i32, JsonValue)],
+    // (transactionId, vout, protostoneIndex, blockHeight, decoded_json)
+    items: &[(String, i32, i32, i32, JsonValue)],
 ) -> Result<()> {
     if !txids.is_empty() {
-        sqlx::query(r#"delete from "DecodedProtostone" where "transactionId" = any($1)"#)
-            .bind(txids)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            r#"with ids as (select unnest($1::text[]) as txid)
+               delete from "DecodedProtostone" dp using ids
+               where dp."transactionId" = ids.txid"#,
+        )
+        .bind(txids)
+        .execute(&mut **tx)
+        .await?;
     }
     if items.is_empty() { return Ok(()); }
 
     const MAX_PARAMS: usize = 65535;
-    const PER_ROW: usize = 4;
+    const PER_ROW: usize = 5;
     let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1).min(2000);
 
     for chunk in items.chunks(max_rows) {
         let mut q = String::from(
-            "insert into \"DecodedProtostone\" (\"transactionId\", \"vout\", \"protostoneIndex\", \"decoded\") values ",
+            "insert into \"DecodedProtostone\" (\"transactionId\", \"vout\", \"protostoneIndex\", \"blockHeight\", \"decoded\") values ",
         );
         for i in 0..chunk.len() {
             if i > 0 { q.push(','); }
             let base = i * PER_ROW;
-            q.push_str(&format!("(${}, ${}, ${}, ${})", base+1, base+2, base+3, base+4));
+            q.push_str(&format!("(${}, ${}, ${}, ${}, ${})", base+1, base+2, base+3, base+4, base+5));
         }
         q.push_str(" on conflict (\"transactionId\", \"vout\", \"protostoneIndex\") do update set \"decoded\" = excluded.\"decoded\", \"updatedAt\" = now() where \"DecodedProtostone\".\"decoded\" is distinct from excluded.\"decoded\"");
         let mut qb = sqlx::query(&q);
-        for (txid, vout, idx, decoded) in chunk {
-            qb = qb.bind(txid).bind(vout).bind(idx).bind(decoded);
+        for (txid, vout, idx, block_height, decoded) in chunk {
+            qb = qb.bind(txid).bind(vout).bind(idx).bind(block_height).bind(decoded);
         }
         qb.execute(&mut **tx).await?;
     }

@@ -12,9 +12,8 @@ pub const DDL: &str = r#"
 create extension if not exists pgcrypto;
 
 create table if not exists "AlkaneTransaction" (
-  "id" text primary key default gen_random_uuid()::text,
+  "transactionId" text primary key,
   "blockHeight" integer not null,
-  "transactionId" text not null unique,
   "transactionIndex" integer not null default 0,
   "hasTrace" boolean not null default false,
   "traceSucceed" boolean not null default false,
@@ -23,14 +22,15 @@ create table if not exists "AlkaneTransaction" (
   "updatedAt" timestamptz not null default now()
 );
 
-create index if not exists "idx_AlkaneTransaction_blockHeight" on "AlkaneTransaction"("blockHeight");
-create index if not exists "idx_AlkaneTransaction_transactionId" on "AlkaneTransaction"("transactionId");
 create index if not exists "idx_AlkaneTransaction_blockHeight_transactionIndex" on "AlkaneTransaction"("blockHeight", "transactionIndex");
+create index if not exists "idx_AlkaneTransaction_brin_blockHeight" on "AlkaneTransaction" using brin ("blockHeight") with (pages_per_range = 128);
+alter table "AlkaneTransaction" alter column "transactionData" set storage external;
 
 create table if not exists "TraceEvent" (
-  "id" text primary key default gen_random_uuid()::text,
+  "id" uuid primary key default gen_random_uuid(),
   "transactionId" text not null,
   "vout" integer not null,
+  "blockHeight" integer not null,
   "alkaneAddressBlock" text not null,
   "alkaneAddressTx" text not null,
   "eventType" text not null,
@@ -42,20 +42,26 @@ create table if not exists "TraceEvent" (
 
 create index if not exists "idx_TraceEvent_transactionId" on "TraceEvent"("transactionId");
 create index if not exists "idx_TraceEvent_eventType" on "TraceEvent"("eventType");
+create index if not exists "idx_TraceEvent_brin_blockHeight" on "TraceEvent" using brin ("blockHeight") with (pages_per_range = 128);
+create index if not exists "idx_TraceEvent_blockHeight_eventType" on "TraceEvent"("blockHeight", "eventType");
+alter table "TraceEvent" set (fillfactor = 80, autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 5000, autovacuum_analyze_scale_factor = 0.02);
+alter table "TraceEvent" alter column "data" set storage external;
 
 create table if not exists "DecodedProtostone" (
-  "id" text primary key default gen_random_uuid()::text,
   "transactionId" text not null,
   "vout" integer not null,
   "protostoneIndex" integer not null,
+  "blockHeight" integer not null,
   "decoded" jsonb not null,
   "createdAt" timestamptz not null default now(),
   "updatedAt" timestamptz not null default now(),
-  constraint "uq_DecodedProtostone_tx_vout_index" unique ("transactionId", "vout", "protostoneIndex"),
+  constraint "DecodedProtostone_pkey" primary key ("transactionId", "vout", "protostoneIndex"),
   constraint "fk_DecodedProtostone_transaction" foreign key ("transactionId") references "AlkaneTransaction"("transactionId")
 );
 
-create index if not exists "idx_DecodedProtostone_transactionId" on "DecodedProtostone"("transactionId");
+create index if not exists "idx_DecodedProtostone_brin_blockHeight" on "DecodedProtostone" using brin ("blockHeight") with (pages_per_range = 128);
+alter table "DecodedProtostone" set (fillfactor = 80, autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 5000, autovacuum_analyze_scale_factor = 0.02);
+alter table "DecodedProtostone" alter column "decoded" set storage external;
 
 create table if not exists "ClockIn" (
   "id" uuid primary key default gen_random_uuid(),

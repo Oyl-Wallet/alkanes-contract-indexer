@@ -42,8 +42,8 @@ async fn main() -> Result<()> {
     // Write basic tx/protostone/trace rows (for consistency with pipeline)
     let mut tx_rows: Vec<(i32, String, i32, bool, bool, serde_json::Value)> = Vec::with_capacity(results.len());
     let mut all_txids: Vec<String> = Vec::with_capacity(results.len());
-    let mut protostone_rows: Vec<(String, i32, i32, serde_json::Value)> = Vec::new();
-    let mut event_rows: Vec<(String, i32, String, serde_json::Value, String, String)> = Vec::new();
+    let mut protostone_rows: Vec<(String, i32, i32, i32, serde_json::Value)> = Vec::new();
+    let mut event_rows: Vec<(String, i32, i32, String, serde_json::Value, String, String)> = Vec::new();
     for (tx_index, r) in results.iter().enumerate() {
         let txid = r.transaction_id.clone();
         all_txids.push(txid.clone());
@@ -56,11 +56,12 @@ async fn main() -> Result<()> {
             r.transaction_json.clone(),
         ));
         for d in &r.decoded_protostones {
-            protostone_rows.push((txid.clone(), d.vout, d.protostone_index, d.decoded.clone()));
+            protostone_rows.push((txid.clone(), d.vout, d.protostone_index, cli.height as i32, d.decoded.clone()));
         }
         for e in &r.trace_events {
             event_rows.push((
                 txid.clone(),
+                cli.height as i32,
                 e.vout,
                 e.event_type.clone(),
                 e.data.clone(),

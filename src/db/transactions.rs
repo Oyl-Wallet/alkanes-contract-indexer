@@ -28,6 +28,9 @@ pub async fn upsert_alkane_transactions(
         q.push_str(
             " on conflict (\"transactionId\") do update set \"blockHeight\" = excluded.\"blockHeight\", \"transactionIndex\" = excluded.\"transactionIndex\", \"hasTrace\" = excluded.\"hasTrace\", \"traceSucceed\" = excluded.\"traceSucceed\", \"transactionData\" = excluded.\"transactionData\", \"updatedAt\" = now()",
         );
+        q.push_str(
+            " where (\"AlkaneTransaction\".\"blockHeight\", \"AlkaneTransaction\".\"transactionIndex\", \"AlkaneTransaction\".\"hasTrace\", \"AlkaneTransaction\".\"traceSucceed\", \"AlkaneTransaction\".\"transactionData\") is distinct from (excluded.\"blockHeight\", excluded.\"transactionIndex\", excluded.\"hasTrace\", excluded.\"traceSucceed\", excluded.\"transactionData\")",
+        );
 
         let mut qb = sqlx::query(&q);
         for (bh, txid, idx, has_trace, trace_ok, data) in chunk {
@@ -109,7 +112,7 @@ pub async fn replace_decoded_protostones(
             let base = i * PER_ROW;
             q.push_str(&format!("(${}, ${}, ${}, ${})", base+1, base+2, base+3, base+4));
         }
-        q.push_str(" on conflict (\"transactionId\", \"vout\", \"protostoneIndex\") do update set \"decoded\" = excluded.\"decoded\", \"updatedAt\" = now()");
+        q.push_str(" on conflict (\"transactionId\", \"vout\", \"protostoneIndex\") do update set \"decoded\" = excluded.\"decoded\", \"updatedAt\" = now() where \"DecodedProtostone\".\"decoded\" is distinct from excluded.\"decoded\"");
         let mut qb = sqlx::query(&q);
         for (txid, vout, idx, decoded) in chunk {
             qb = qb.bind(txid).bind(vout).bind(idx).bind(decoded);

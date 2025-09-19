@@ -297,9 +297,17 @@ where
                                     }
                                 }
                                 Err(e) => {
-                                    error!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %e, "trace failed; aborting block batch");
+                                    let emsg = format!("{}", e);
+                                    // Known upstream non-deterministic client error from alkanes base-rpc addHexPrefix
+                                    // Example: Cannot read properties of undefined (reading 'substr')
+                                    if emsg.contains("Non-standard error object received") && emsg.contains("Cannot read properties of undefined") {
+                                        warn!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %emsg, "trace returned upstream TypeError; skipping this protostone");
+                                        // Do not set has_trace; continue with next protostone/tx
+                                        continue;
+                                    }
+                                    error!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %emsg, "trace failed; aborting block batch");
                                     // Record fatal error to fail the block rather than proceeding with partial results
-                                    *fatal_err.lock().await = Some(format!("trace failed for {} vout {}: {}", txid_be, vout, e));
+                                    *fatal_err.lock().await = Some(format!("trace failed for {} vout {}: {}", txid_be, vout, emsg));
                                     return;
                                 }
                             }

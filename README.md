@@ -347,6 +347,8 @@ For the i-th protostone (0-based), the vout is `start + i`.
 - Some transactions can be temporarily excluded from decode/trace if they consistently return no trace or otherwise block batch processing.
 - The ignore list is implemented as a constant array in `src/helpers/protostone.rs` named `IGNORED_TRACE_TXIDS` (big-endian txid strings). Any txid in this list is filtered out before any decode/trace work and a log line is emitted at INFO: "skipping txid from ignore list".
 - To add or remove entries, edit `IGNORED_TRACE_TXIDS` and rebuild. This is intended as an operational safety valve; prefer fixing upstream issues where possible.
+- Additionally, the decoder treats a specific upstream non-standard error from `alkanes_trace` as a non-fatal skip per protostone:
+  - When the RPC error contains both `Non-standard error object received` and `Cannot read properties of undefined`, the protostone is skipped and the batch continues. This avoids failing the entire block due to this upstream client error (commonly originating in `alkanes/lib/base-rpc.js:addHexPrefix`).
 
 ### Pool discovery implementation details
 - We rely on deezel-common's `alkanes::amm::AmmManager` helpers, which accept a Sandshrew/Metashrew URL parameter.

@@ -56,6 +56,9 @@ Operational considerations:
 - alkanes_trace expects little-endian txid hex; the helper converts the standard big-endian string before calling.
 - Logs now include per-batch summaries (size, decoded, trace_ok/trace_err, skipped, elapsed_ms) and overall totals with elapsed time.
 
+Error-based skipping:
+- If `alkanes_trace` returns a non-standard upstream error whose message includes both `Non-standard error object received` and `Cannot read properties of undefined`, that protostone is skipped (WARN log) and the batch continues without failing the block.
+
 Ignored transactions:
 - A constant `IGNORED_TRACE_TXIDS` in this module contains big-endian txid strings that will be skipped before any decode/trace work.
 - This is a safety valve for pathological txs that repeatedly fail to trace and would otherwise fail a whole block. Update the list in `src/helpers/protostone.rs` and rebuild.

@@ -171,19 +171,28 @@ where
         .collect();
 
     let results: Arc<Mutex<Vec<TxDecodeTraceResult>>> = Arc::new(Mutex::new(Vec::new()));
+    let fatal_err: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     stream::iter(batches.into_iter().enumerate())
         .for_each_concurrent(num_batches, |(batch_idx, batch)| {
             let url = url.clone();
             let results = results.clone();
+            let fatal_err = fatal_err.clone();
             async move {
             info!(batch = batch_idx, size = batch.len(), "batch start");
             for (local_idx, tx_json) in batch.into_iter().enumerate() {
+                // If a fatal error has been recorded, stop further work in this task
+                if fatal_err.lock().await.is_some() { return; }
                 let txid_str = tx_json.get("txid").and_then(|v| v.as_str()).unwrap_or("<no-txid>");
                 info!(batch = batch_idx, index = local_idx, %txid_str, "fetching tx hex");
                 let tx = match tx_from_json_or_fetch_hex(provider, &tx_json).await {
                     Ok(t) => t,
-                    Err(e) => { error!(batch = batch_idx, %txid_str, error = %e, "failed to materialize tx; skipping"); continue; }
+                    Err(e) => {
+                        error!(batch = batch_idx, %txid_str, error = %e, "failed to materialize tx; aborting block batch");
+                        // Record fatal error to fail the block rather than silently skipping this tx
+                        *fatal_err.lock().await = Some(format!("materialize_tx failed for {}: {}", txid_str, e));
+                        return;
+                    }
                 };
                 info!(batch = batch_idx, index = local_idx, %txid_str, outputs = tx.output.len(), "tx ready; decoding runestone");
                 let decode_attempt = catch_unwind(AssertUnwindSafe(|| format_runestone_with_decoded_messages(&tx)));
@@ -264,7 +273,12 @@ where
                                         });
                                     }
                                 }
-                                Err(e) => { error!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %e, "trace failed"); }
+                                Err(e) => {
+                                    error!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %e, "trace failed; aborting block batch");
+                                    // Record fatal error to fail the block rather than proceeding with partial results
+                                    *fatal_err.lock().await = Some(format!("trace failed for {} vout {}: {}", txid_be, vout, e));
+                                    return;
+                                }
                             }
                         }
                         let result = TxDecodeTraceResult {
@@ -296,6 +310,10 @@ where
         .await;
 
     info!("decode_and_trace_for_block: complete (batched parallel)");
+
+    if let Some(err) = fatal_err.lock().await.clone() {
+        return Err(anyhow::anyhow!(err));
+    }
 
     let out = results.lock().await.clone();
     Ok(out)

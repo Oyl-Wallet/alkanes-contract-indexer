@@ -4,6 +4,7 @@ use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::env;
 use crate::helpers::rpc::{resilient_call, resilient_provider_call};
+use tracing::warn;
 
 // Resolve block hash by height via Bitcoin RPC provider
 pub async fn get_block_hash<P>(provider: &P, height: u64) -> Result<String>
@@ -41,22 +42,43 @@ where
 		.ok()
 		.or_else(|| provider.get_bitcoin_rpc_url())
 		.unwrap_or_else(|| "http://localhost:18888".to_string());
-    let results: Vec<Option<JsonValue>> = stream::iter(txids.iter().cloned().enumerate())
-		.map(|(_idx, txid)| {
-			let url_inner = url.clone();
-			let provider_ref = provider;
-			async move {
-                match resilient_call(provider_ref, &url_inner, "esplora_tx", json!([txid]), 1).await {
-					Ok(v) => Some(v),
-					Err(_e) => None,
-				}
-			}
-		})
-		.buffer_unordered(batch_size)
-		.collect()
-		.await;
-	let txs: Vec<JsonValue> = results.into_iter().flatten().collect();
-	Ok(txs)
+    let results: Vec<(String, Option<JsonValue>)> = stream::iter(txids.iter().cloned())
+        .map(|txid| {
+            let url_inner = url.clone();
+            let provider_ref = provider;
+            async move {
+                let res = match resilient_call(provider_ref, &url_inner, "esplora_tx", json!([txid.clone()]), 1).await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        warn!(%txid, error = %e, "esplora_tx failed after retries");
+                        None
+                    }
+                };
+                (txid, res)
+            }
+        })
+        .buffer_unordered(batch_size)
+        .collect()
+        .await;
+
+    // If any tx fetch failed, fail the block so it can be retried rather than silently dropping txs.
+    let mut failed: Vec<String> = Vec::new();
+    let mut ok_vals: Vec<JsonValue> = Vec::with_capacity(results.len());
+    for (txid, val_opt) in results.into_iter() {
+        match val_opt {
+            Some(v) => ok_vals.push(v),
+            None => failed.push(txid),
+        }
+    }
+    if !failed.is_empty() {
+        let sample: Vec<String> = failed.iter().take(5).cloned().collect();
+        return Err(anyhow::anyhow!(
+            "esplora_tx failed for {} txids (sample: {})",
+            failed.len(),
+            sample.join(", ")
+        ));
+    }
+    Ok(ok_vals)
 }
 
 // Determine if a transaction JSON has any OP_RETURN outputs

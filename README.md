@@ -8,7 +8,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - **Block-processing pipeline**: For each new block height the service:
   - resolves the block hash via Bitcoin RPC
   - fetches ordered txids via JSON-RPC `esplora_block::txids`
-  - fetches transaction info concurrently in batches of 25 via `esplora_tx`
+  - fetches transaction info concurrently in batches of 25 via `esplora_tx` (strict: if any per-tx fetch fails after retries, the whole block processing fails and is retried)
   - filters transactions for OP_RETURN outputs and logs the count
   - decodes Runestone/Protostone for OP_RETURN transactions and calls `alkanes_trace` per decoded protostone using 10-way batched parallelism
   - persists results in Postgres in a single transaction per block: upserts `AlkaneTransaction`, replaces `DecodedProtostone` and flattened per-event `TraceEvent` rows for affected `transactionId`s
@@ -291,7 +291,7 @@ The decode/trace flow lives in `src/helpers/protostone.rs` and is invoked from `
 
 1. `process_block_sequential` fetches tx infos and filters for OP_RETURN transactions.
 2. It logs the OP_RETURN count and invokes `decode_and_trace_for_block(provider, &op_return_txs, 32, 16)`.
-3. `decode_and_trace_for_block` returns a `Vec<TxDecodeTraceResult>` and processes OP_RETURN txs using 10-way batched parallelism:
+3. `decode_and_trace_for_block` returns a `Vec<TxDecodeTraceResult>` and processes OP_RETURN txs using 10-way batched parallelism. Strictness: if any tx hex fetch or `alkanes_trace` call fails after retries, the function returns an error to fail the block so it is retried rather than silently dropping the tx.
    - Split OP_RETURN transactions into up to 10 batches (ceil-divided), each batch processed concurrently.
    - For each tx in a batch: fetch tx hex (Esplora first, fallback to Bitcoin Core) with timeout/backoff; deserialize to `bitcoin::Transaction`.
    - Decode runestone/protostones using `format_runestone_with_decoded_messages` from deezel.

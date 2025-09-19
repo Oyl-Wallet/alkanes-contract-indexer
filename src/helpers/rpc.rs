@@ -73,9 +73,19 @@ pub async fn resilient_call<P: DeezelProvider + JsonRpcProvider + Send + Sync>(
                 return Ok(val);
             }
             Ok(Err(e)) => {
-                warn!(%method, attempt, error = %e, "rpc error");
+                let raw_msg = format!("{e}");
+                // Treat specific upstream client error from alkanes_trace as non-retriable
+                let lc = raw_msg.to_ascii_lowercase();
+                let is_non_retriable = method == "alkanes_trace"
+                    && lc.contains("non-standard error object received")
+                    && lc.contains("cannot read properties of undefined");
+                if is_non_retriable {
+                    warn!(%method, attempt, error = %raw_msg, "rpc non-retriable error; returning immediately");
+                    return Err(anyhow::anyhow!(raw_msg));
+                }
+                warn!(%method, attempt, error = %raw_msg, "rpc error");
                 // Heuristic: trip circuit on network-wide symptoms
-                let msg = format!("{e}").to_ascii_lowercase();
+                let msg = lc;
                 if msg.contains("connection") || msg.contains("timeout") || msg.contains("too many requests") || msg.contains("503") {
                     // continue with backoff
                 }
@@ -129,9 +139,17 @@ pub async fn resilient_call_with_last_error<P: DeezelProvider + JsonRpcProvider 
                 return Ok(val);
             }
             Ok(Err(e)) => {
-                let msg = format!("{e}");
-                last_error = Some(msg.clone());
-                warn!(%method, attempt, error = %msg, "rpc error");
+                let raw_msg = format!("{e}");
+                let lc = raw_msg.to_ascii_lowercase();
+                let is_non_retriable = method == "alkanes_trace"
+                    && lc.contains("non-standard error object received")
+                    && lc.contains("cannot read properties of undefined");
+                if is_non_retriable {
+                    warn!(%method, attempt, error = %raw_msg, "rpc non-retriable error; returning immediately");
+                    return Err(anyhow::anyhow!(raw_msg));
+                }
+                last_error = Some(raw_msg.clone());
+                warn!(%method, attempt, error = %raw_msg, "rpc error");
             }
             Err(_elapsed) => {
                 let msg = String::from("timeout");

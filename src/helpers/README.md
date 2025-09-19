@@ -56,6 +56,10 @@ Operational considerations:
 - alkanes_trace expects little-endian txid hex; the helper converts the standard big-endian string before calling.
 - Logs now include per-batch summaries (size, decoded, trace_ok/trace_err, skipped, elapsed_ms) and overall totals with elapsed time.
 
+Ignored transactions:
+- A constant `IGNORED_TRACE_TXIDS` in this module contains big-endian txid strings that will be skipped before any decode/trace work.
+- This is a safety valve for pathological txs that repeatedly fail to trace and would otherwise fail a whole block. Update the list in `src/helpers/protostone.rs` and rebuild.
+
 ## notify.rs
 Writes a Redis key after pools are refreshed for a tip so dependent services can react.
 

@@ -14,7 +14,7 @@ pub async fn upsert_alkane_transactions(
 
     const MAX_PARAMS: usize = 65535;
     const PER_ROW: usize = 6;
-    let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1);
+    let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1).min(1500);
 
     for chunk in items.chunks(max_rows) {
         let mut q = String::from(
@@ -61,7 +61,7 @@ pub async fn replace_trace_events(
 
     const MAX_PARAMS: usize = 65535;
     const PER_ROW: usize = 6;
-    let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1);
+    let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1).min(2000);
 
     for chunk in events.chunks(max_rows) {
         let mut q = String::from(
@@ -98,7 +98,7 @@ pub async fn replace_decoded_protostones(
 
     const MAX_PARAMS: usize = 65535;
     const PER_ROW: usize = 4;
-    let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1);
+    let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1).min(2000);
 
     for chunk in items.chunks(max_rows) {
         let mut q = String::from(

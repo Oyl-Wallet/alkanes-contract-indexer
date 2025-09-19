@@ -43,7 +43,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 We depend on deezel’s common crate for provider and RPC traits. Upstream reference: [`Sprimage/deezel`](https://github.com/Sprimage/deezel).
 
 ### Environment Variables
-Create a `.env` file at the repo root (you can copy from `example.env`) or export variables in your shell.
+Create a `.env` file at the repo root (you can copy from `.example.env`) or export variables in your shell.
 
 ```env
 DATABASE_URL=postgres://user:pass@localhost:5432/alkanes_indexer
@@ -125,21 +125,23 @@ cargo build --release
 ```
 
 ### Important: SQLx compile-time checks (fresh machine builds)
-SQLx validates `sqlx::query!` macros at compile time by connecting to your `DATABASE_URL` and checking the queried tables/columns. On a fresh database without the schema, builds can fail with errors like:
+This project now avoids `sqlx::query!` in favor of runtime-checked `sqlx::query`, so a live database is NOT required to build on a fresh machine.
+
+If you fork this repo and add `sqlx::query!` calls, SQLx will validate those macros at compile time by connecting to your `DATABASE_URL` and checking the queried tables/columns. On a fresh database without the schema, builds can fail with errors like:
 
 ```
 error: error returned from database: relation "DecodedProtostone" does not exist
 ```
 
-To fix this, choose one workflow:
+If you use `sqlx::query!`, choose one workflow:
 
-- Initialize the database before building (recommended)
+- Initialize the database (typical flow)
   1. Ensure `DATABASE_URL` is set (see Environment Variables below).
-  2. Push the schema:
+  2. Build and push the schema:
      ```bash
      cargo run --bin dbctl -- push
      ```
-  3. Build:
+  3. Build the binaries (optional, `cargo run` will build as needed):
      ```bash
      cargo build --release
      ```

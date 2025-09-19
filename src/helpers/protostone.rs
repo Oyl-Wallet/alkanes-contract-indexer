@@ -14,6 +14,12 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::helpers::block::tx_has_op_return;
 
+// Hardcoded list of txids to skip during trace/decode. These are big-endian txid strings.
+// If a txid appears here, it will be excluded from processing to avoid blocking a whole block.
+static IGNORED_TRACE_TXIDS: &[&str] = &[
+    "a807e8d4e91a6fa957c3f9929d267f6795971e41e6da61c44886deaa45797830",
+];
+
 #[derive(Debug, Clone)]
 struct TraceJob {
     txid_le_hex: String,
@@ -158,6 +164,16 @@ where
     info!(txs = txs.len(), "decode_and_trace_for_block: start (batched parallel)");
     // Only OP_RETURN txs
     let op_return_txs: Vec<JsonValue> = txs.iter().filter(|t| tx_has_op_return(t)).cloned().collect();
+    // Skip txids explicitly ignored
+    let op_return_txs: Vec<JsonValue> = op_return_txs
+        .into_iter()
+        .filter(|t| {
+            let id = t.get("txid").and_then(|v| v.as_str()).unwrap_or("");
+            let skip = IGNORED_TRACE_TXIDS.contains(&id);
+            if skip { info!(%id, "skipping txid from ignore list"); }
+            !skip
+        })
+        .collect();
     let total = op_return_txs.len();
     info!(op_return_txs = total, "filtered OP_RETURN transactions");
     if total == 0 { return Ok(Vec::new()); }

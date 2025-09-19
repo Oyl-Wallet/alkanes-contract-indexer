@@ -298,17 +298,25 @@ where
                                     }
                                 }
                                 Err(e) => {
-                                    let emsg = format!("{}", e);
+                                    // Build a combined error string including all causes in the chain
+                                    let mut combined = String::new();
+                                    combined.push_str(&e.to_string());
+                                    for cause in e.chain().skip(1) { // skip the top-level to avoid duplication
+                                        combined.push_str(" | ");
+                                        combined.push_str(&cause.to_string());
+                                    }
+                                    let lc = combined.to_ascii_lowercase();
                                     // Known upstream non-deterministic client error from alkanes base-rpc addHexPrefix
-                                    // Example: Cannot read properties of undefined (reading 'substr')
-                                    if emsg.contains("Non-standard error object received") && emsg.contains("Cannot read properties of undefined") {
-                                        warn!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %emsg, "trace returned upstream TypeError; skipping this protostone");
+                                    // Example contains: "non-standard error object received" and "cannot read properties of undefined (reading 'substr')"
+                                    let is_known_upstream_typeerror = lc.contains("non-standard error object received") && lc.contains("cannot read properties of undefined");
+                                    if is_known_upstream_typeerror {
+                                        warn!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %combined, "trace returned upstream TypeError; skipping this protostone");
                                         // Do not set has_trace; continue with next protostone/tx
                                         continue;
                                     }
-                                    error!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = %emsg, "trace failed; aborting block batch");
+                                    error!(batch = batch_idx, %txid_be, protostone_idx = i, vout, error = ?e, "trace failed; aborting block batch");
                                     // Record fatal error to fail the block rather than proceeding with partial results
-                                    *fatal_err.lock().await = Some(format!("trace failed for {} vout {}: {}", txid_be, vout, emsg));
+                                    *fatal_err.lock().await = Some(format!("trace failed for {} vout {}: {}", txid_be, vout, combined));
                                     return;
                                 }
                             }

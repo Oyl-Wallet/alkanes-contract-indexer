@@ -269,6 +269,19 @@ Notes:
 - `sellerAddress` is derived from `DecodedProtostone.pointer_destination.address` by matching the `vout` of the swap's `invoke` event.
 - Requires `Pool` table to be populated with the pools referenced by trace events.
 
+### Standalone: Force re-process a block
+
+To re-run the full pipeline for a single height (even if it already exists in `ProcessedBlocks`):
+
+```bash
+cargo run --bin reprocess -- --height 840000
+```
+
+This executes `Pipeline::process_block_sequential` for the given height and will:
+- Re-fetch txids and txs, decode/trace, and write `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`.
+- Rebuild PoolSwap/PoolCreation/PoolMint/PoolBurn rows for the block via the existing replace-* functions (they delete by txids then insert), ensuring a clean reindex for that block.
+- Upsert `ProcessedBlocks` again for the height with the current block hash and timestamp.
+
 ### Metashrew height off-by-one
 - Metashrew's `get_metashrew_height()` reports the next height (tip + 1). The indexer normalizes this by subtracting 1 to obtain the canonical chain tip.
 - Implementation: `helpers/block.rs` provides `canonical_tip_height(provider)` used by both the poller and catch-up coordinator.

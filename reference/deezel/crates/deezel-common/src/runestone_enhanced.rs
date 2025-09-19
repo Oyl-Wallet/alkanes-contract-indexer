@@ -661,9 +661,9 @@ pub fn format_runestone_with_decoded_messages(tx: &Transaction) -> Result<Value>
     });
     
     for protostone in protostones {
-        let decoded_message = if !protostone.message.is_empty() {
+        let decoded_message_strings: Option<Vec<String>> = if !protostone.message.is_empty() {
             match decode_protostone_message(&protostone.message) {
-                Ok(decoded) => Some(decoded),
+                Ok(decoded) => Some(decoded.into_iter().map(|n| n.to_string()).collect()),
                 Err(e) => {
                     debug!("Failed to decode protostone message: {e}");
                     None
@@ -683,7 +683,7 @@ pub fn format_runestone_with_decoded_messages(tx: &Transaction) -> Result<Value>
             "protocol_tag": protostone.protocol_tag,
             "protocol_name": protocol_name,
             "message_bytes": protostone.message,
-            "message_decoded": decoded_message,
+            "message_decoded": decoded_message_strings,
             "burn": protostone.burn,
             "refund": protostone.refund,
             "pointer": protostone.pointer,
@@ -691,10 +691,10 @@ pub fn format_runestone_with_decoded_messages(tx: &Transaction) -> Result<Value>
             "edicts": protostone.edicts.iter().map(|edict| {
                 let mut edict_json = json!({
                     "id": {
-                        "block": edict.id.block,
-                        "tx": edict.id.tx
+                        "block": edict.id.block.to_string(),
+                        "tx": edict.id.tx.to_string()
                     },
-                    "amount": edict.amount,
+                    "amount": edict.amount.to_string(),
                     "output": edict.output
                 });
                 
@@ -881,23 +881,24 @@ pub fn print_human_readable_runestone(tx: &Transaction, result: &serde_json::Val
                         .join(" ");
                     println!("   📄 Raw bytes: {bytes_str}");
                     
-                    // Show decoded values
+                    // Show decoded values (support strings or numbers)
                     if let Some(message_decoded) = protostone.get("message_decoded").and_then(|v| v.as_array()) {
                         let decoded_str = message_decoded.iter()
-                            .filter_map(|v| v.as_u64())
-                            .map(|n| n.to_string())
+                            .map(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_u64().map(|n| n.to_string())).unwrap_or_else(|| "?".to_string()))
                             .collect::<Vec<_>>()
                             .join(", ");
                         println!("   🔓 Decoded: [{decoded_str}]");
                         
-                        // Special handling for DIESEL tokens
+                        // Special handling for DIESEL tokens (accept strings or numbers)
                         if let Some(protocol_tag) = protostone.get("protocol_tag").and_then(|v| v.as_u64()) {
                             if protocol_tag == 1 && message_decoded.len() >= 3 {
-                                if let (Some(first), Some(second), Some(third)) = (
-                                    message_decoded[0].as_u64(),
-                                    message_decoded[1].as_u64(),
-                                    message_decoded[2].as_u64()
-                                ) {
+                                let first = message_decoded[0].as_u64()
+                                    .or_else(|| message_decoded[0].as_str().and_then(|s| s.parse::<u64>().ok()));
+                                let second = message_decoded[1].as_u64()
+                                    .or_else(|| message_decoded[1].as_str().and_then(|s| s.parse::<u64>().ok()));
+                                let third = message_decoded[2].as_u64()
+                                    .or_else(|| message_decoded[2].as_str().and_then(|s| s.parse::<u64>().ok()));
+                                if let (Some(first), Some(second), Some(third)) = (first, second, third) {
                                     if first == 2 && second == 0 && third == 77 {
                                         println!("   🔥 DIESEL Token Mint Detected!");
                                         println!("   ⚡ Cellpack: [2, 0, 77] (Standard DIESEL mint)");
@@ -914,9 +915,9 @@ pub fn print_human_readable_runestone(tx: &Transaction, result: &serde_json::Val
                         println!("📋 Token Transfers ({}):", edicts.len());
                         for (j, edict) in edicts.iter().enumerate() {
                             if let Some(edict_obj) = edict.as_object() {
-                                let id_block = edict_obj.get("id").and_then(|v| v.get("block")).and_then(|v| v.as_u64()).unwrap_or(0);
-                                let id_tx = edict_obj.get("id").and_then(|v| v.get("tx")).and_then(|v| v.as_u64()).unwrap_or(0);
-                                let amount = edict_obj.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let id_block = edict_obj.get("id").and_then(|v| v.get("block")).and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_u64().map(|n| n.to_string()))).unwrap_or_else(|| "0".to_string());
+                                let id_tx = edict_obj.get("id").and_then(|v| v.get("tx")).and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_u64().map(|n| n.to_string()))).unwrap_or_else(|| "0".to_string());
+                                let amount = edict_obj.get("amount").and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_u64().map(|n| n.to_string()))).unwrap_or_else(|| "0".to_string());
                                 let output_idx = edict_obj.get("output").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                                 
                                 let tree_symbol = if j == edicts.len() - 1 { "└─" } else { "├─" };

@@ -18,7 +18,8 @@ use crate::helpers::block::tx_has_op_return;
 // If a txid appears here, it will be excluded from processing to avoid blocking a whole block.
 static IGNORED_TRACE_TXIDS: &[&str] = &[
     "a807e8d4e91a6fa957c3f9929d267f6795971e41e6da61c44886deaa45797830",
-    "33c5a9f2d415b2b826a2ea1230d1849be0a74dc73857460c9c7674fe76147830"
+    "33c5a9f2d415b2b826a2ea1230d1849be0a74dc73857460c9c7674fe76147830",
+    "79c202e94c425320c91d6176108b93c033fb5a627fc2750453e97c6c434e7830"
 ];
 
 #[derive(Debug, Clone)]

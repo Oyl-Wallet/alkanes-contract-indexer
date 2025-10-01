@@ -15,9 +15,9 @@ pub struct TypesAlkaneId { pub block: String, pub tx: String }
 pub struct PoolDetailsResult {
     pub token0: TypesAlkaneId,
     pub token1: TypesAlkaneId,
-    pub token0_amount: u64,
-    pub token1_amount: u64,
-    pub token_supply: u64,
+    pub token0_amount: u128,
+    pub token1_amount: u128,
+    pub token_supply: u128,
     pub pool_name: String,
 }
 
@@ -73,9 +73,9 @@ pub async fn fetch_all_pools_with_details(
                 details: PoolDetailsResult {
                     token0: TypesAlkaneId { block: details.token0.block.to_string(), tx: details.token0.tx.to_string() },
                     token1: TypesAlkaneId { block: details.token1.block.to_string(), tx: details.token1.tx.to_string() },
-                    token0_amount: details.token0_amount,
-                    token1_amount: details.token1_amount,
-                    token_supply: details.token_supply,
+                    token0_amount: details.token0_amount as u128,
+                    token1_amount: details.token1_amount as u128,
+                    token_supply: details.token_supply as u128,
                     pool_name: details.pool_name,
                 },
             });

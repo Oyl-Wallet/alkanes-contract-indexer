@@ -551,9 +551,9 @@ const FACTORY_OPCODE_GET_ALL_POOLS: u64 = 3;
 pub struct PoolDetailsResult {
     pub token0: TypesAlkaneId,
     pub token1: TypesAlkaneId,
-    pub token0_amount: u64,
-    pub token1_amount: u64,
-    pub token_supply: u64,
+    pub token0_amount: u128,
+    pub token1_amount: u128,
+    pub token_supply: u128,
     pub pool_name: String,
 }
 
@@ -673,20 +673,17 @@ fn decode_pool_details(data_hex: &str) -> Option<PoolDetailsResult> {
     if data_hex == "0x" { return None; }
     let bytes = hex_to_bytes(data_hex)?;
 
-    // Values are encoded as 128-bit little-endian. We take the low 64 bits.
-    let lo_mask: u128 = 0xFFFF_FFFF_FFFF_FFFF;
-
     let token0 = TypesAlkaneId {
-        block: (read_u128_le(&bytes, 0)? & lo_mask) as u64,
-        tx: (read_u128_le(&bytes, 16)? & lo_mask) as u64,
+        block: (read_u128_le(&bytes, 0)? & 0xFFFF_FFFF_FFFF_FFFF) as u64,
+        tx: (read_u128_le(&bytes, 16)? & 0xFFFF_FFFF_FFFF_FFFF) as u64,
     };
     let token1 = TypesAlkaneId {
-        block: (read_u128_le(&bytes, 32)? & lo_mask) as u64,
-        tx: (read_u128_le(&bytes, 48)? & lo_mask) as u64,
+        block: (read_u128_le(&bytes, 32)? & 0xFFFF_FFFF_FFFF_FFFF) as u64,
+        tx: (read_u128_le(&bytes, 48)? & 0xFFFF_FFFF_FFFF_FFFF) as u64,
     };
-    let token0_amount = (read_u128_le(&bytes, 64)? & lo_mask) as u64;
-    let token1_amount = (read_u128_le(&bytes, 80)? & lo_mask) as u64;
-    let token_supply = (read_u128_le(&bytes, 96)? & lo_mask) as u64;
+    let token0_amount = read_u128_le(&bytes, 64)?;
+    let token1_amount = read_u128_le(&bytes, 80)?;
+    let token_supply = read_u128_le(&bytes, 96)?;
     let pool_name = if bytes.len() > 116 {
         String::from_utf8_lossy(&bytes[116..]).to_string()
     } else {

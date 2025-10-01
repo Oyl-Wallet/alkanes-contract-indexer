@@ -687,7 +687,7 @@ dependencies = [
 [[package]]
 name = "deezel-asc"
 version = "0.1.0"
-source = "git+https://github.com/Sprimage/deezel#9ae66a73c69704511d312c920700f8f53f563876"
+source = "git+https://github.com/Sprimage/deezel#53c3d394d040228af1774d5a42b96b7148e5e017"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -700,7 +700,7 @@ dependencies = [
 [[package]]
 name = "deezel-common"
 version = "0.1.0"
-source = "git+https://github.com/Sprimage/deezel#9ae66a73c69704511d312c920700f8f53f563876"
+source = "git+https://github.com/Sprimage/deezel#53c3d394d040228af1774d5a42b96b7148e5e017"
 dependencies = [
  "aes-gcm",
  "alkanes-support",
@@ -759,7 +759,7 @@ dependencies = [
 [[package]]
 name = "deezel-pretty-print-macro"
 version = "0.1.0"
-source = "git+https://github.com/Sprimage/deezel#9ae66a73c69704511d312c920700f8f53f563876"
+source = "git+https://github.com/Sprimage/deezel#53c3d394d040228af1774d5a42b96b7148e5e017"
 dependencies = [
  "quote",
  "serde_json",

@@ -42,7 +42,7 @@ impl BlockPoller {
                             // If we are not running catch-up, begin processing the current tip immediately
                             if self.start_height.is_none() {
                                 info!(height, "new block detected");
-                                if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height }).await {
+                                if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height, emit_publish: true }).await {
                                     error!(height, error = %e, "block processing failed");
                                 }
                             }
@@ -58,7 +58,7 @@ impl BlockPoller {
                             }
                             for h in (prev + 1)..=height {
                                 info!(height = h, "new block detected");
-                                if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height: h }).await {
+                                if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height: h, emit_publish: true }).await {
                                     error!(height = h, error = %e, "block processing failed");
                                     // Stop advancing so we can retry this specific height on next loop
                                     break;

@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     );
 
     info!(height = cli.height, "reprocessing block (forced)");
-    pipeline.process_block_sequential(&provider, alkanes_contract_indexer::pipeline::BlockContext { height: cli.height }).await?;
+    pipeline.process_block_sequential(&provider, alkanes_contract_indexer::pipeline::BlockContext { height: cli.height, emit_publish: false }).await?;
     info!(height = cli.height, "block reprocessed successfully");
     Ok(())
 }

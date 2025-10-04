@@ -118,6 +118,28 @@ This document describes the current database schema for hot tables and the write
     - btree: (`burnerAddress`,`poolBlockId`,`poolTxId`,`timestamp`) [address+pool]
     - BRIN: `timestamp`
 
+- SubfrostWrap
+  - Primary key: `id` (text)
+  - Columns: tx refs (`transactionId`,`blockHeight`,`transactionIndex`), `address` (optional), `amount` text, `successful` boolean default true, `timestamp` timestamptz, timestamps
+  - Indexes:
+    - btree: `transactionId`
+    - btree: `blockHeight`
+    - btree: (`address`,`timestamp`)
+    - btree: (`blockHeight`,`transactionIndex`)
+    - btree: (`successful`,`blockHeight`,`transactionIndex`)
+    - BRIN: `timestamp`
+
+- SubfrostUnwrap
+  - Primary key: `id` (text)
+  - Columns: tx refs (`transactionId`,`blockHeight`,`transactionIndex`), `address` (optional), `amount` text, `successful` boolean default true, `timestamp` timestamptz, timestamps
+  - Indexes:
+    - btree: `transactionId`
+    - btree: `blockHeight`
+    - btree: (`address`,`timestamp`)
+    - btree: (`blockHeight`,`transactionIndex`)
+    - btree: (`successful`,`blockHeight`,`transactionIndex`)
+    - BRIN: `timestamp`
+
 - CuratedPools
   - Primary key: `id` (text)
   - Columns: `factoryId` text unique, `poolIds` text[]
@@ -156,8 +178,14 @@ This document describes the current database schema for hot tables and the write
     - PoolSwap: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, soldTokenBlockId, soldTokenTxId, boughtTokenBlockId, boughtTokenTxId, soldAmount double, boughtAmount double, sellerAddress, successful, timestamp)`
     - PoolMint: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount text, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount text, token1Amount text, minterAddress, successful, timestamp)`
     - PoolBurn: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount text, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount text, token1Amount text, burnerAddress, successful, timestamp)`
+    - SubfrostWrap: `(transactionId, blockHeight, transactionIndex, address, amount text, successful, timestamp)`
+    - SubfrostUnwrap: `(transactionId, blockHeight, transactionIndex, address, amount text, successful, timestamp)`
+  - Deletes use `delete from "SubfrostWrap" where "transactionId" = any($1)` and `delete from "SubfrostUnwrap" where "transactionId" = any($1)`.
 
   - Function: `db::transactions::replace_decoded_protostones`
+Additional Subfrost writers:
+- `db::transactions::replace_subfrost_wraps`: deletes by txids then inserts wrap rows in chunks.
+- `db::transactions::replace_subfrost_unwraps`: deletes by txids then inserts unwrap rows in chunks.
   - Shape per row: `(transactionId, vout, protostoneIndex, blockHeight, decoded)`
   - Deletes existing rows for txids using CTE + `unnest`; inserts with `ON CONFLICT ... DO UPDATE` guarded by `IS DISTINCT FROM` on `decoded`.
 
@@ -174,5 +202,9 @@ This document describes the current database schema for hot tables and the write
 - Schema management via `cargo run --bin dbctl -- push|reset|drop`.
 - The indexer writes the three hot tables in a single transaction per block, minimizing partial states.
 - If you need to reprocess a block: run `cargo run --bin reprocess -- --height <H>`; it will recompute and fully replace rows for that height’s txids.
+ - Reset or control progress:
+   - `cargo run --bin dbctl -- reset-progress --height H` sets `kv_store.last_processed_height` to `H-1` (H=0 clears the key).
+ - Purge all indexed data for a specific blockHeight (safe order):
+   - `cargo run --bin dbctl -- purge-block --height H`
 
 

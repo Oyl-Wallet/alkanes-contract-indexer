@@ -432,3 +432,113 @@ pub async fn replace_pool_burns(
     }
     Ok(())
 }
+
+/// Replace SubfrostWrap rows for a set of txids, then bulk insert provided wraps.
+pub async fn replace_subfrost_wraps(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    txids: &[String],
+    // (transactionId, blockHeight, transactionIndex, address, amount, successful, timestamp)
+    wraps: &[(
+        String,
+        i32,
+        i32,
+        Option<String>,
+        String,
+        bool,
+        chrono::DateTime<chrono::Utc>,
+    )],
+) -> Result<()> {
+    if !txids.is_empty() {
+        sqlx::query(r#"delete from "SubfrostWrap" where "transactionId" = any($1)"#)
+            .bind(txids)
+            .execute(&mut **tx)
+            .await?;
+    }
+    if wraps.is_empty() { return Ok(()); }
+
+    const MAX_PARAMS: usize = 65535;
+    const PER_ROW: usize = 7;
+    let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1);
+
+    for chunk in wraps.chunks(max_rows) {
+        let mut q = String::from(
+            "insert into \"SubfrostWrap\" (\"transactionId\", \"blockHeight\", \"transactionIndex\", \"address\", \"amount\", \"successful\", \"timestamp\") values ",
+        );
+        for i in 0..chunk.len() {
+            if i > 0 { q.push(','); }
+            let base = i * PER_ROW;
+            q.push_str(&format!(
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                base+1, base+2, base+3, base+4, base+5, base+6, base+7
+            ));
+        }
+        let mut qb = sqlx::query(&q);
+        for (txid, bh, idx, addr, amt, success, ts) in chunk {
+            qb = qb
+                .bind(txid)
+                .bind(bh)
+                .bind(idx)
+                .bind(addr)
+                .bind(amt)
+                .bind(success)
+                .bind(ts);
+        }
+        qb.execute(&mut **tx).await?;
+    }
+    Ok(())
+}
+
+/// Replace SubfrostUnwrap rows for a set of txids, then bulk insert provided unwraps.
+pub async fn replace_subfrost_unwraps(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    txids: &[String],
+    // (transactionId, blockHeight, transactionIndex, address, amount, successful, timestamp)
+    unwraps: &[(
+        String,
+        i32,
+        i32,
+        Option<String>,
+        String,
+        bool,
+        chrono::DateTime<chrono::Utc>,
+    )],
+) -> Result<()> {
+    if !txids.is_empty() {
+        sqlx::query(r#"delete from "SubfrostUnwrap" where "transactionId" = any($1)"#)
+            .bind(txids)
+            .execute(&mut **tx)
+            .await?;
+    }
+    if unwraps.is_empty() { return Ok(()); }
+
+    const MAX_PARAMS: usize = 65535;
+    const PER_ROW: usize = 7;
+    let max_rows = (MAX_PARAMS / PER_ROW).saturating_sub(8).max(1);
+
+    for chunk in unwraps.chunks(max_rows) {
+        let mut q = String::from(
+            "insert into \"SubfrostUnwrap\" (\"transactionId\", \"blockHeight\", \"transactionIndex\", \"address\", \"amount\", \"successful\", \"timestamp\") values ",
+        );
+        for i in 0..chunk.len() {
+            if i > 0 { q.push(','); }
+            let base = i * PER_ROW;
+            q.push_str(&format!(
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                base+1, base+2, base+3, base+4, base+5, base+6, base+7
+            ));
+        }
+        let mut qb = sqlx::query(&q);
+        for (txid, bh, idx, addr, amt, success, ts) in chunk {
+            qb = qb
+                .bind(txid)
+                .bind(bh)
+                .bind(idx)
+                .bind(addr)
+                .bind(amt)
+                .bind(success)
+                .bind(ts);
+        }
+        qb.execute(&mut **tx).await?;
+    }
+    Ok(())
+}

@@ -321,6 +321,45 @@ create table if not exists "CuratedPools" (
   "updatedAt" timestamptz not null default now()
 );
 
+-- Subfrost wrap/unwrap events
+create table if not exists "SubfrostWrap" (
+  "id" text primary key default gen_random_uuid()::text,
+  "transactionId" text not null,
+  "blockHeight" integer not null,
+  "transactionIndex" integer not null default 0,
+  "address" text,
+  "amount" text not null,
+  "successful" boolean not null default true,
+  "timestamp" timestamptz not null,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now()
+);
+create index if not exists "idx_SubfrostWrap_transactionId" on "SubfrostWrap"("transactionId");
+create index if not exists "idx_SubfrostWrap_blockHeight" on "SubfrostWrap"("blockHeight");
+create index if not exists "idx_SubfrostWrap_address_ts" on "SubfrostWrap"("address", "timestamp");
+create index if not exists "idx_SubfrostWrap_blockHeight_transactionIndex" on "SubfrostWrap"("blockHeight", "transactionIndex");
+create index if not exists "idx_SubfrostWrap_success_block_tx" on "SubfrostWrap"("successful", "blockHeight", "transactionIndex");
+create index if not exists "idx_SubfrostWrap_brin_timestamp" on "SubfrostWrap" using brin ("timestamp") with (pages_per_range = 128);
+
+create table if not exists "SubfrostUnwrap" (
+  "id" text primary key default gen_random_uuid()::text,
+  "transactionId" text not null,
+  "blockHeight" integer not null,
+  "transactionIndex" integer not null default 0,
+  "address" text,
+  "amount" text not null,
+  "successful" boolean not null default true,
+  "timestamp" timestamptz not null,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now()
+);
+create index if not exists "idx_SubfrostUnwrap_transactionId" on "SubfrostUnwrap"("transactionId");
+create index if not exists "idx_SubfrostUnwrap_blockHeight" on "SubfrostUnwrap"("blockHeight");
+create index if not exists "idx_SubfrostUnwrap_address_ts" on "SubfrostUnwrap"("address", "timestamp");
+create index if not exists "idx_SubfrostUnwrap_blockHeight_transactionIndex" on "SubfrostUnwrap"("blockHeight", "transactionIndex");
+create index if not exists "idx_SubfrostUnwrap_success_block_tx" on "SubfrostUnwrap"("successful", "blockHeight", "transactionIndex");
+create index if not exists "idx_SubfrostUnwrap_brin_timestamp" on "SubfrostUnwrap" using brin ("timestamp") with (pages_per_range = 128);
+
 -- progress KV store (already used by coordinator)
 create table if not exists kv_store (
   key text primary key,
@@ -351,6 +390,8 @@ drop table if exists "TraceEvent" cascade;
 drop table if exists "DecodedProtostone" cascade;
 drop table if exists "AlkaneTransaction" cascade;
 drop table if exists "CuratedPools" cascade;
+drop table if exists "SubfrostUnwrap" cascade;
+drop table if exists "SubfrostWrap" cascade;
 drop table if exists kv_store cascade;
 "#;
 

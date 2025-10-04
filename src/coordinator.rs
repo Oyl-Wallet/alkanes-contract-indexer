@@ -36,7 +36,7 @@ impl<P: MetashrewRpcProvider + BitcoinRpcProvider + EsploraProvider + JsonRpcPro
 
         for h in next..=tip {
             info!(height = h, "catch-up: processing block sequentially");
-            if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height: h }).await {
+            if let Err(e) = self.pipeline.process_block_sequential(&self.provider, BlockContext { height: h, emit_publish: false }).await {
                 error!(height = h, error = %e, "catch-up block processing failed");
                 break;
             }

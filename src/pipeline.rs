@@ -13,7 +13,7 @@ use crate::helpers::poolswap::index_pool_swaps_for_block;
 use crate::helpers::poolcreate::index_pool_creations_for_block;
 use crate::helpers::poolmint::index_pool_mints_for_block;
 use crate::helpers::poolburn::index_pool_burns_for_block;
-use crate::helpers::subfrost::index_subfrost_wraps_for_block;
+use crate::helpers::subfrost::{index_subfrost_wraps_for_block, index_subfrost_unwraps_for_block};
 use crate::db::transactions::replace_pool_creations;
 use chrono::{TimeZone, Utc};
 use chrono::DateTime;
@@ -169,8 +169,9 @@ impl Pipeline {
             // Index pool burns
             index_pool_burns_for_block(&self.pool, ctx.height as i32, &burn_inputs).await?;
 
-            // Index Subfrost wraps
+            // Index Subfrost wraps and unwraps
             index_subfrost_wraps_for_block(&self.pool, ctx.height as i32, &subfrost_inputs).await?;
+            index_subfrost_unwraps_for_block(&self.pool, ctx.height as i32, &subfrost_inputs).await?;
 		}
 
 		// Determine block timestamp: use first tx's block_time if present, else now()

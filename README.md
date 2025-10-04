@@ -31,9 +31,9 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/helpers/poolcreate.rs`: Pool creation (initial liquidity) indexer that detects opcode `0x0` delegatecalls and writes `PoolCreation` rows.
 - `src/helpers/poolmint.rs`: Pool mint (add_liquidity) indexer that detects opcode `0x1` delegatecalls and writes `PoolMint` rows (now also writes failed attempts with `successful=false`).
 - `src/helpers/poolburn.rs`: Pool burn (remove_liquidity) indexer that detects opcode `0x2` delegatecalls and writes `PoolBurn` rows (now also writes failed attempts with `successful=false`).
-- `src/helpers/subfrost.rs`: Subfrost wrap indexer that detects opcode `0x4d` invokes on alkaneAddress 32:0 and writes `SubfrostWrap` rows, resolving `address` from `DecodedProtostone.pointer_destination.address` when available.
+- `src/helpers/subfrost.rs`: Subfrost wrap/unwrap indexers. Wraps detect opcode `0x4d` (77) invokes on alkaneAddress 32:0 and write `SubfrostWrap` rows. Unwraps detect opcode `0x4e` (78) invokes on alkaneAddress 32:0 and write `SubfrostUnwrap` rows. Both resolve `address` from `DecodedProtostone.pointer_destination.address` when available.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
-- `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules. Includes Subfrost wrap indexing.
+- `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules. Includes Subfrost wrap and unwrap indexing.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
 - `src/db/transactions.rs`: Batch upsert/replace for `AlkaneTransaction`, `TraceEvent`, and `DecodedProtostone` keyed by `transactionId`, plus helper to read decoded protostones by `(transactionId, vout)`.
 - `reference/deezel/`: Vendored reference copy of deezel source for exploration only (do not import from here at build time).
@@ -286,8 +286,9 @@ Notes:
 - `sellerAddress` is derived from `DecodedProtostone.pointer_destination.address` by matching the `vout` of the swap's `invoke` event.
 - Requires `Pool` table to be populated with the pools referenced by trace events.
 
-Subfrost wraps:
-- `address` on `SubfrostWrap` is resolved from `DecodedProtostone.pointer_destination.address` matched by `vout` when available (otherwise null).
+Subfrost wraps/unwraps:
+- Wraps: `amount` is taken from the successful `return.response.alkanes` sum for the Subfrost token id (32:0), matched on the same `vout` following an opcode `0x4d` invoke. `address` on `SubfrostWrap` is resolved from `DecodedProtostone.pointer_destination.address` matched by `vout` when available (otherwise null).
+- Unwraps: `amount` is the net of Subfrost token id (32:0) between the `invoke.data.context.incomingAlkanes` (incoming) and `return.response.alkanes` (outgoing), matched on the same `vout` following an opcode `0x4e` invoke with a successful return. `address` on `SubfrostUnwrap` is resolved from `DecodedProtostone.pointer_destination.address` matched by `vout` when available (otherwise null).
 
 ### Standalone: Force re-process a block
 

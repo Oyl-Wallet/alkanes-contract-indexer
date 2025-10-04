@@ -181,17 +181,25 @@ Indexes AMM pool burn (remove_liquidity) events from stored trace events and wri
   - `index_pool_burns_for_block` decodes candidates for a block and writes via `replace_pool_burns` in a single transaction for the block.
 
 ## subfrost.rs
-Indexes Subfrost wrap (mint) events from stored trace events and writes structured rows into `SubfrostWrap`.
+Indexes Subfrost wrap (mint) and unwrap (redeem) events from stored trace events and writes structured rows into `SubfrostWrap` and `SubfrostUnwrap`.
 
-- Detection logic per candidate trace event:
-  1. Event must be `invoke` and opcode `inputs[0] == 0x4d` (77) on the Subfrost contract (`alkaneAddressBlock/Tx == 32:0`).
-  2. Events are normalized to the same order as the inspector: by `vout` ascending with `invoke` before `return` for matching.
-  3. Select the matching `return` on the same `vout` where `status` is success and `response.alkanes` contains the Subfrost token id `0x20:0`; sum that amount as the wrapped units.
-  4. Persist a row for every candidate invoke. If a matching `return` is not found or computed amount is zero, write `amount = "0"` and `successful=false`. Otherwise write computed amount and `successful=true`.
-  5. Resolve `address` from the decoded protostone at the same `vout` by reading `pointer_destination.address` when available; otherwise leave null.
+- Wrap detection per candidate trace event:
+  1. `invoke` with opcode `inputs[0] == 0x4d` (77) on the Subfrost contract (`alkaneAddressBlock/Tx == 32:0`).
+  2. Events are normalized: by `vout` ascending with `invoke` before `return` for matching.
+  3. Select the matching `return` on the same `vout` where `status` is success and `response.alkanes` contains the Subfrost token id `(block=0x20, tx=0)`; sum that amount as wrapped units.
+  4. Persist for every candidate invoke. If no matching `return` or computed amount is zero, write `amount="0"` and `successful=false`; otherwise `successful=true` with computed amount.
+  5. Resolve `address` via decoded protostone at that `vout` (`pointer_destination.address`) when available.
+
+- Unwrap detection per candidate trace event:
+  1. `invoke` with opcode `inputs[0] == 0x4e` (78) on the Subfrost contract (`alkaneAddressBlock/Tx == 32:0`).
+  2. Events are normalized: by `vout` ascending with `invoke` before `return` for matching.
+  3. Compute incoming Subfrost amount from `invoke.data.context.incomingAlkanes` for token `(block=0x20, tx=0)`.
+  4. Select the matching `return` on the same `vout` with success status and compute outgoing Subfrost from `return.data.response.alkanes` for the same token.
+  5. Net amount = `incoming - outgoing` (stored as string). Persist for every candidate invoke; if no matching return, write `amount="0"` and `successful=false`.
+  6. Resolve `address` via decoded protostone at that `vout` (`pointer_destination.address`) when available.
 
 - Integration points:
-  - `index_subfrost_wraps_for_block` preloads decoded protostones for the block and writes via `replace_subfrost_wraps` in a single transaction for the block.
+  - `index_subfrost_wraps_for_block` and `index_subfrost_unwraps_for_block` preload decoded protostones and write via `replace_subfrost_wraps` / `replace_subfrost_unwraps` respectively in single transactions for the block.
 
 ## inspect.rs (CLI)
 Standalone inspector to analyze a single `transactionId`:

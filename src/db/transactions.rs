@@ -449,7 +449,7 @@ pub async fn replace_subfrost_wraps(
     )],
 ) -> Result<()> {
     if !txids.is_empty() {
-        sqlx::query(r#"delete from \"SubfrostWrap\" where \"transactionId\" = any($1)"#)
+        sqlx::query(r#"delete from "SubfrostWrap" where "transactionId" = any($1)"#)
             .bind(txids)
             .execute(&mut **tx)
             .await?;

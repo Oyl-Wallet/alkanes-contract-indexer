@@ -4,7 +4,7 @@ use serde_json::Value as JsonValue;
 use sqlx::PgPool;
 use tracing::info;
 
-use crate::db::transactions::replace_subfrost_wraps;
+use crate::db::transactions::{replace_subfrost_wraps, get_decoded_protostones_by_txid_vout};
 
 fn hex_to_u128(hex_str: &str) -> Option<u128> {
     let s = hex_str.strip_prefix("0x").unwrap_or(hex_str);
@@ -49,6 +49,8 @@ pub async fn index_subfrost_wraps_for_block(
     results: &[(String, i32, DateTime<Utc>, JsonValue, Vec<JsonValue>)]
 ) -> Result<()> {
     let txids: Vec<String> = results.iter().map(|r| r.0.clone()).collect();
+    // Preload decoded protostones for address extraction (pointer_destination.address)
+    let decoded_by_tx_vout = get_decoded_protostones_by_txid_vout(db, &txids).await?;
     let mut wrap_rows: Vec<(String, i32, i32, Option<String>, String, bool, DateTime<Utc>)> = Vec::new();
 
     for (txid, tx_idx, timestamp, _tx_json, events) in results.iter() {
@@ -101,8 +103,22 @@ pub async fn index_subfrost_wraps_for_block(
                 if success { break; }
             }
 
-            // Address not yet derivable from trace alone; leave None for now
-            let address: Option<String> = None;
+            // Extract wrapper address from DecodedProtostone.pointer_destination.address at this vout
+            let address: Option<String> = decoded_by_tx_vout
+                .get(txid)
+                .and_then(|by_vout| by_vout.get(&(invoke_vout as i32)))
+                .and_then(|items| {
+                    for (_idx, d) in items {
+                        if let Some(addr) = d
+                            .get("pointer_destination")
+                            .and_then(|pd| pd.get("address"))
+                            .and_then(|v| v.as_str())
+                        {
+                            return Some(addr.to_string());
+                        }
+                    }
+                    None
+                });
             let amount_str = if success { amount_u128.to_string() } else { "0".to_string() };
             wrap_rows.push((
                 txid.clone(),

@@ -15,6 +15,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, `TraceEvent`, and Subfrost event tables. Large batches are automatically chunked to stay within SQL bind parameter limits. Deletes for replacement use CTE+unnest for better plans on large arrays.
  - **Pool* success flag**: `PoolSwap`, `PoolMint`, and `PoolBurn` now record both successful and failed attempts. Successful rows have computed amounts and `successful=true`; failed attempts are recorded with zero amounts and `successful=false`. `PoolCreation` remains success-only (but includes a `successful` column defaulting to true for consistency).
  - **Processed blocks tracking**: After each `process_block_sequential` completes, the service upserts into `ProcessedBlocks` with `(blockHeight, blockHash, timestamp, isProcessing=false)`. The timestamp comes from the first transaction's `status.block_time` in the block if available, otherwise `Utc::now()`.
+ - **Publishing policy**: Redis publish for "block processed" runs only for realtime tip blocks. Catch-up blocks do not publish, avoiding noisy downstream updates.
 
 ### Repository Structure
 - `src/main.rs`: Program entrypoint; initializes config, DB, provider; runs background poller until Ctrl-C.
@@ -30,7 +31,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/helpers/poolcreate.rs`: Pool creation (initial liquidity) indexer that detects opcode `0x0` delegatecalls and writes `PoolCreation` rows.
 - `src/helpers/poolmint.rs`: Pool mint (add_liquidity) indexer that detects opcode `0x1` delegatecalls and writes `PoolMint` rows (now also writes failed attempts with `successful=false`).
 - `src/helpers/poolburn.rs`: Pool burn (remove_liquidity) indexer that detects opcode `0x2` delegatecalls and writes `PoolBurn` rows (now also writes failed attempts with `successful=false`).
-- `src/helpers/subfrost.rs`: Subfrost wrap indexer that detects opcode `0x4d` invokes on alkaneAddress 32:0 and writes `SubfrostWrap` rows.
+- `src/helpers/subfrost.rs`: Subfrost wrap indexer that detects opcode `0x4d` invokes on alkaneAddress 32:0 and writes `SubfrostWrap` rows, resolving `address` from `DecodedProtostone.pointer_destination.address` when available.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
 - `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules. Includes Subfrost wrap indexing.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
@@ -68,11 +69,11 @@ NETWORK=regtest
 POLL_INTERVAL_MS=2000
 
 # Optional: start height for historical catch-up.
-# - If set: a catch-up coordinator will process sequentially from this height (or
-#   the last persisted progress) up to the current tip. The coordinator starts
-#   only after the poller has initialized tip and refreshed pools.
-# - If unset: no catch-up is performed; the poller immediately processes the
-#   current tip on startup and then continues with subsequent blocks.
+# - If set: a catch-up coordinator will process sequentially from max(START_HEIGHT, last_progress+1)
+#   up to the current tip. The coordinator starts only after the poller has initialized tip
+#   and refreshed pools. Catch-up processing does NOT publish realtime notifications.
+# - If unset: no catch-up is performed; the poller immediately processes the current tip
+#   on startup (publishing) and then continues with subsequent blocks.
 #START_HEIGHT=800000
 
 # Required: Factory contract ID for AMM pools discovery
@@ -181,6 +182,14 @@ cargo run --bin dbctl -- drop
 
 # Apply versioned migrations (non-destructive updates)
 cargo run --bin dbctl -- migrate
+
+# Reset progress so the next run starts at a specific height
+# H > 0: sets kv_store.last_processed_height = H-1 (next run starts at H)
+# H = 0: clears the progress key (next run starts at 0 only if START_HEIGHT is unset)
+cargo run --bin dbctl -- reset-progress --height 917000
+
+# Purge all indexed data for a specific blockHeight (safe order, single transaction)
+cargo run --bin dbctl -- purge-block --height 917522
 ```
 
 The schema mirrors the previous Prisma-based design (types mapped to Postgres) with performance-focused modifications:
@@ -220,7 +229,7 @@ The service will:
    - detects new heights (filling gaps)
    - on first observation (no previous height): triggers `Pipeline::fetch_pools_for_tip(provider, tip)` once
    - after a successful pools refresh, writes Redis key `indexer-${NETWORK_ENV || NETWORK || 'mainnet'}-pools-lastblock` with value `<tip>`
-   - on first observation AND no `START_HEIGHT`: also processes the current tip immediately
+   - on first observation AND no `START_HEIGHT`: also processes the current tip immediately (publishing enabled)
    - on height increase: first triggers `Pipeline::fetch_pools_for_tip(provider, tip)`
    - then processes each new block via `Pipeline::process_block_sequential`
    - after a block finishes indexing, record a row in `ProcessedBlocks` with the block's hash and timestamp
@@ -228,7 +237,7 @@ The service will:
 4) If `START_HEIGHT` is set, start the catch-up coordinator which:
    - waits for the poller to initialize tip (and perform the initial pools/state refresh) before starting
    - reads canonical tip height and computes `[next..=tip]` from `START_HEIGHT` and the last stored progress from DB
-   - sequentially processes `[next..=tip]` via `Pipeline::process_block_sequential`
+   - sequentially processes `[next..=tip]` via `Pipeline::process_block_sequential` (publishing disabled for these blocks)
    - persists `last_processed_height` in `kv_store`
    - after catch-up, the poller continues processing subsequent new blocks as they arrive
 
@@ -276,6 +285,9 @@ Notes on ID/value normalization:
 Notes:
 - `sellerAddress` is derived from `DecodedProtostone.pointer_destination.address` by matching the `vout` of the swap's `invoke` event.
 - Requires `Pool` table to be populated with the pools referenced by trace events.
+
+Subfrost wraps:
+- `address` on `SubfrostWrap` is resolved from `DecodedProtostone.pointer_destination.address` matched by `vout` when available (otherwise null).
 
 ### Standalone: Force re-process a block
 

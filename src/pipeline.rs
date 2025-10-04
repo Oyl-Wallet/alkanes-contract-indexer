@@ -23,6 +23,7 @@ use crate::db::blocks::upsert_processed_block;
 #[derive(Clone, Debug)]
 pub struct BlockContext {
 	pub height: u64,
+	pub emit_publish: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -184,8 +185,10 @@ impl Pipeline {
 		upsert_processed_block(&self.pool, ctx.height as i32, &block_hash, block_ts).await?;
 		info!(height = ctx.height, %block_hash, "recorded ProcessedBlocks entry");
 
-		// Notify downstream services via Redis pub-sub (best effort)
-		publish_block_processed(ctx.height).await;
+		// Notify downstream services via Redis pub-sub only for realtime blocks (not during catch-up)
+		if ctx.emit_publish {
+			publish_block_processed(ctx.height).await;
+		}
 
 		Ok(())
 	}

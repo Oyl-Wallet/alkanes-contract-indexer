@@ -64,7 +64,7 @@ Ignored transactions:
 - This is a safety valve for pathological txs that repeatedly fail to trace and would otherwise fail a whole block. Update the list in `src/helpers/protostone.rs` and rebuild.
 
 ## notify.rs
-Writes a Redis key after pools are refreshed for a tip so dependent services can react.
+Writes a Redis key after pools are refreshed for a tip so dependent services can react. Publishing for processed blocks is restricted to realtime blocks only; catch-up processing does not publish.
 
 - Key name: `indexer-${NETWORK_ENV || 'mainnet'}-pools-lastblock`
 - Value: decimal block height (string)
@@ -188,9 +188,10 @@ Indexes Subfrost wrap (mint) events from stored trace events and writes structur
   2. Events are normalized to the same order as the inspector: by `vout` ascending with `invoke` before `return` for matching.
   3. Select the matching `return` on the same `vout` where `status` is success and `response.alkanes` contains the Subfrost token id `0x20:0`; sum that amount as the wrapped units.
   4. Persist a row for every candidate invoke. If a matching `return` is not found or computed amount is zero, write `amount = "0"` and `successful=false`. Otherwise write computed amount and `successful=true`.
+  5. Resolve `address` from the decoded protostone at the same `vout` by reading `pointer_destination.address` when available; otherwise leave null.
 
 - Integration points:
-  - `index_subfrost_wraps_for_block` decodes candidates for a block and writes via `replace_subfrost_wraps` in a single transaction for the block.
+  - `index_subfrost_wraps_for_block` preloads decoded protostones for the block and writes via `replace_subfrost_wraps` in a single transaction for the block.
 
 ## inspect.rs (CLI)
 Standalone inspector to analyze a single `transactionId`:

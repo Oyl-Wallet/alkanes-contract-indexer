@@ -180,6 +180,18 @@ Indexes AMM pool burn (remove_liquidity) events from stored trace events and wri
 - Integration points:
   - `index_pool_burns_for_block` decodes candidates for a block and writes via `replace_pool_burns` in a single transaction for the block.
 
+## subfrost.rs
+Indexes Subfrost wrap (mint) events from stored trace events and writes structured rows into `SubfrostWrap`.
+
+- Detection logic per candidate trace event:
+  1. Event must be `invoke` and opcode `inputs[0] == 0x4d` (77) on the Subfrost contract (`alkaneAddressBlock/Tx == 32:0`).
+  2. Events are normalized to the same order as the inspector: by `vout` ascending with `invoke` before `return` for matching.
+  3. Select the matching `return` on the same `vout` where `status` is success and `response.alkanes` contains the Subfrost token id `0x20:0`; sum that amount as the wrapped units.
+  4. Persist a row for every candidate invoke. If a matching `return` is not found or computed amount is zero, write `amount = "0"` and `successful=false`. Otherwise write computed amount and `successful=true`.
+
+- Integration points:
+  - `index_subfrost_wraps_for_block` decodes candidates for a block and writes via `replace_subfrost_wraps` in a single transaction for the block.
+
 ## inspect.rs (CLI)
 Standalone inspector to analyze a single `transactionId`:
 

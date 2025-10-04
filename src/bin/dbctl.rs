@@ -19,6 +19,8 @@ enum Commands {
     Reset,
     /// Drop all tables without re-pushing the schema
     Drop,
+    /// Run sqlx migrations from the migrations/ directory
+    Migrate,
 }
 
 #[tokio::main]
@@ -42,6 +44,11 @@ async fn main() -> Result<()> {
         Commands::Drop => {
             alkanes_contract_indexer::schema::drop_all_tables(&pool).await?;
             info!("All tables dropped successfully");
+        }
+        Commands::Migrate => {
+            // Apply migrations in migrations/ folder at crate root
+            sqlx::migrate!().run(&pool).await?;
+            info!("Migrations applied successfully");
         }
     }
     Ok(())

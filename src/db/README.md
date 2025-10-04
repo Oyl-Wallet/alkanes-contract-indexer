@@ -118,6 +118,17 @@ This document describes the current database schema for hot tables and the write
     - btree: (`burnerAddress`,`poolBlockId`,`poolTxId`,`timestamp`) [address+pool]
     - BRIN: `timestamp`
 
+- SubfrostWrap
+  - Primary key: `id` (text)
+  - Columns: tx refs (`transactionId`,`blockHeight`,`transactionIndex`), `address` (optional), `amount` text, `successful` boolean default true, `timestamp` timestamptz, timestamps
+  - Indexes:
+    - btree: `transactionId`
+    - btree: `blockHeight`
+    - btree: (`address`,`timestamp`)
+    - btree: (`blockHeight`,`transactionIndex`)
+    - btree: (`successful`,`blockHeight`,`transactionIndex`)
+    - BRIN: `timestamp`
+
 - CuratedPools
   - Primary key: `id` (text)
   - Columns: `factoryId` text unique, `poolIds` text[]
@@ -156,6 +167,7 @@ This document describes the current database schema for hot tables and the write
     - PoolSwap: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, soldTokenBlockId, soldTokenTxId, boughtTokenBlockId, boughtTokenTxId, soldAmount double, boughtAmount double, sellerAddress, successful, timestamp)`
     - PoolMint: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount text, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount text, token1Amount text, minterAddress, successful, timestamp)`
     - PoolBurn: `(transactionId, blockHeight, transactionIndex, poolBlockId, poolTxId, lpTokenAmount text, token0BlockId, token0TxId, token1BlockId, token1TxId, token0Amount text, token1Amount text, burnerAddress, successful, timestamp)`
+    - SubfrostWrap: `(transactionId, blockHeight, transactionIndex, address, amount text, successful, timestamp)`
 
   - Function: `db::transactions::replace_decoded_protostones`
   - Shape per row: `(transactionId, vout, protostoneIndex, blockHeight, decoded)`

@@ -12,7 +12,7 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
   - filters transactions for OP_RETURN outputs and logs the count
   - decodes Runestone/Protostone for OP_RETURN transactions and calls `alkanes_trace` per decoded protostone using 10-way batched parallelism
   - persists results in Postgres in a single transaction per block: upserts `AlkaneTransaction`, replaces `DecodedProtostone` and flattened per-event `TraceEvent` rows for affected `transactionId`s
-- **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, and `TraceEvent`. Large batches are automatically chunked to stay within SQL bind parameter limits. Deletes for replacement use CTE+unnest for better plans on large arrays.
+- **Postgres writes**: Batch, transactional, and indexable by `transactionId` across `AlkaneTransaction`, `DecodedProtostone`, `TraceEvent`, and Subfrost event tables. Large batches are automatically chunked to stay within SQL bind parameter limits. Deletes for replacement use CTE+unnest for better plans on large arrays.
  - **Pool* success flag**: `PoolSwap`, `PoolMint`, and `PoolBurn` now record both successful and failed attempts. Successful rows have computed amounts and `successful=true`; failed attempts are recorded with zero amounts and `successful=false`. `PoolCreation` remains success-only (but includes a `successful` column defaulting to true for consistency).
  - **Processed blocks tracking**: After each `process_block_sequential` completes, the service upserts into `ProcessedBlocks` with `(blockHeight, blockHash, timestamp, isProcessing=false)`. The timestamp comes from the first transaction's `status.block_time` in the block if available, otherwise `Utc::now()`.
 
@@ -30,8 +30,9 @@ A Rust service that monitors new blocks via Metashrew, fans out concurrent jobs 
 - `src/helpers/poolcreate.rs`: Pool creation (initial liquidity) indexer that detects opcode `0x0` delegatecalls and writes `PoolCreation` rows.
 - `src/helpers/poolmint.rs`: Pool mint (add_liquidity) indexer that detects opcode `0x1` delegatecalls and writes `PoolMint` rows (now also writes failed attempts with `successful=false`).
 - `src/helpers/poolburn.rs`: Pool burn (remove_liquidity) indexer that detects opcode `0x2` delegatecalls and writes `PoolBurn` rows (now also writes failed attempts with `successful=false`).
+- `src/helpers/subfrost.rs`: Subfrost wrap indexer that detects opcode `0x4d` invokes on alkaneAddress 32:0 and writes `SubfrostWrap` rows.
 - `src/provider.rs`: Builds a `deezel_common::provider::ConcreteProvider` for RPC calls.
-- `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules.
+- `src/pipeline.rs`: Orchestrates per-tip work; now delegates decoding to helpers and DB writes to `src/db/*` modules. Includes Subfrost wrap indexing.
 - `src/poller.rs`: `BlockPoller` that polls `metashrew_height`, detects new heights, and invokes the pipeline.
 - `src/db/transactions.rs`: Batch upsert/replace for `AlkaneTransaction`, `TraceEvent`, and `DecodedProtostone` keyed by `transactionId`, plus helper to read decoded protostones by `(transactionId, vout)`.
 - `reference/deezel/`: Vendored reference copy of deezel source for exploration only (do not import from here at build time).
@@ -177,13 +178,16 @@ cargo run --bin dbctl -- reset
 
 # Drop all tables only (no re-push)
 cargo run --bin dbctl -- drop
+
+# Apply versioned migrations (non-destructive updates)
+cargo run --bin dbctl -- migrate
 ```
 
 The schema mirrors the previous Prisma-based design (types mapped to Postgres) with performance-focused modifications:
 - strings as `text`/`uuid`, JSON as `jsonb`, datetimes as `timestamptz`.
 - tables include: `"AlkaneTransaction"`, `"TraceEvent"`, `"DecodedProtostone"`, `"ClockIn"`, `"ProcessedBlocks"`,
   `"ClockInBlockSummary"`, `"ClockInSummary"`, `"CorpData"`, `"Profile"`, `"Pool"`, `"PoolState"`,
-  `"PoolCreation"`, `"PoolSwap"`, `"PoolBurn"`, `"PoolMint"`, `"CuratedPools"`, and `kv_store`.
+  `"PoolCreation"`, `"PoolSwap"`, `"PoolBurn"`, `"PoolMint"`, `"CuratedPools"`, `"SubfrostWrap"`, and `kv_store`.
 - `AlkaneTransaction`: primary key is now `transactionId` (surrogate id removed). Indexes: composite btree on (`blockHeight`,`transactionIndex`) and BRIN on `blockHeight`. JSONB `transactionData` stored EXTERNAL.
 - `TraceEvent`: now includes `blockHeight`; `id` is `uuid`. Indexes: btree on `transactionId`, btree on (`blockHeight`,`eventType`), BRIN on `blockHeight`. Fillfactor/autovacuum tuned; JSONB `data` stored EXTERNAL.
 - `DecodedProtostone`: composite primary key (`transactionId`,`vout`,`protostoneIndex`), includes `blockHeight`. BRIN on `blockHeight`. Fillfactor/autovacuum tuned; JSONB `decoded` stored EXTERNAL.

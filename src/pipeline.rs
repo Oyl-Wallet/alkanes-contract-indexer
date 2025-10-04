@@ -13,6 +13,7 @@ use crate::helpers::poolswap::index_pool_swaps_for_block;
 use crate::helpers::poolcreate::index_pool_creations_for_block;
 use crate::helpers::poolmint::index_pool_mints_for_block;
 use crate::helpers::poolburn::index_pool_burns_for_block;
+use crate::helpers::subfrost::index_subfrost_wraps_for_block;
 use crate::db::transactions::replace_pool_creations;
 use chrono::{TimeZone, Utc};
 use chrono::DateTime;
@@ -130,6 +131,7 @@ impl Pipeline {
 			let mut creation_inputs: Vec<(String, i32, chrono::DateTime<Utc>, serde_json::Value, Vec<serde_json::Value>)> = Vec::new();
             let mut mint_inputs: Vec<(String, i32, chrono::DateTime<Utc>, serde_json::Value, Vec<serde_json::Value>)> = Vec::new();
             let mut burn_inputs: Vec<(String, i32, chrono::DateTime<Utc>, serde_json::Value, Vec<serde_json::Value>)> = Vec::new();
+            let mut subfrost_inputs: Vec<(String, i32, chrono::DateTime<Utc>, serde_json::Value, Vec<serde_json::Value>)> = Vec::new();
 			for (tx_index, r) in results.iter().enumerate() {
 				let ts_opt = r.transaction_json
 					.get("status").and_then(|s| s.get("block_time")).and_then(|v| v.as_i64());
@@ -148,7 +150,8 @@ impl Pipeline {
                 swap_inputs.push((r.transaction_id.clone(), tx_index as i32, ts, r.transaction_json.clone(), trace_events_json.clone()));
                 creation_inputs.push((r.transaction_id.clone(), tx_index as i32, ts, r.transaction_json.clone(), trace_events_json.clone()));
                 mint_inputs.push((r.transaction_id.clone(), tx_index as i32, ts, r.transaction_json.clone(), trace_events_json.clone()));
-                burn_inputs.push((r.transaction_id.clone(), tx_index as i32, ts, r.transaction_json.clone(), trace_events_json));
+                burn_inputs.push((r.transaction_id.clone(), tx_index as i32, ts, r.transaction_json.clone(), trace_events_json.clone()));
+                subfrost_inputs.push((r.transaction_id.clone(), tx_index as i32, ts, r.transaction_json.clone(), trace_events_json));
 			}
 			index_pool_swaps_for_block(&self.pool, ctx.height as i32, &swap_inputs).await?;
 
@@ -164,6 +167,9 @@ impl Pipeline {
 
             // Index pool burns
             index_pool_burns_for_block(&self.pool, ctx.height as i32, &burn_inputs).await?;
+
+            // Index Subfrost wraps
+            index_subfrost_wraps_for_block(&self.pool, ctx.height as i32, &subfrost_inputs).await?;
 		}
 
 		// Determine block timestamp: use first tx's block_time if present, else now()

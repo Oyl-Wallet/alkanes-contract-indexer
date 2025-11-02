@@ -26,5 +26,5 @@ services:
       - FACTORY_TX_ID=65522
       - NETWORK=mainnet
       - POLL_INTERVAL_MS=2000
-      - SANDSHREW_RPC_URL=https://mainnet.sandshrew.io/v4/wrlckwrld
+      - SANDSHREW_RPC_URL=https://mainnet.sandshrew.io/v4/lasereyes
       - POSTGRES_USER=postgres

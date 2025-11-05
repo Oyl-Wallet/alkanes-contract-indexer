@@ -98,14 +98,13 @@ pub fn tx_has_op_return(tx_json: &JsonValue) -> bool {
 	false
 }
 
-// Returns the canonical chain tip height by subtracting 1 from Metashrew's reported height,
-// which is known to be off-by-one (reports next height).
+// Returns the canonical chain tip height  from Metashrew's reported height,
 pub async fn canonical_tip_height<P: MetashrewRpcProvider>(provider: &P) -> Result<u64> {
     let h = resilient_provider_call("get_metashrew_height", || provider.get_metashrew_height()).await?;
 	if h == 0 {
 		return Err(anyhow::anyhow!("unexpected metashrew height 0"));
 	}
-	Ok(h - 1)
+	Ok(h)
 }
 
 

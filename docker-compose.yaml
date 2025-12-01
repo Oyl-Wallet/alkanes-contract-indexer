@@ -1,0 +1,30 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:13
+    ports:
+      - "5555:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=alkanes_indexer
+    volumes:
+      - ${POSTGRES_DATA_DIR}/postgres-data:/var/lib/postgresql/data
+
+  indexer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    depends_on:
+      - postgres
+    environment:
+      - RUST_LOG=info
+      - DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5555/alkanes_indexer
+      - BITCOIN_RPC_URL=http://bitcoinrpc:bitcoinrpc@127.0.0.1:8332
+      - FACTORY_BLOCK_ID=4
+      - FACTORY_TX_ID=65522
+      - NETWORK=mainnet
+      - POLL_INTERVAL_MS=2000
+      - SANDSHREW_RPC_URL=https://mainnet.sandshrew.io/v4/lasereyes
+      - POSTGRES_USER=postgres
